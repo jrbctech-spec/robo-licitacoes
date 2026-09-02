@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Robô de Licitações
+Comment=Automação e Assistência de Lances no Compras.gov.br (Comprasnet Web)
+Exec=/bin/bash /home/jrbc/Documentos/robo-licitacoes/run.sh
+Icon=/home/jrbc/Documentos/robo-licitacoes/assets/icon.png
+Terminal=false
+Categories=Utility;Automation;
+StartupNotify=true
+Path=/home/jrbc/Documentos/robo-licitacoes

@@ -1,0 +1,43 @@
+# Variáveis de ambiente e segredos
+.env
+credentials.json
+token.json
+*.pem
+*.key
+
+# Perfil do navegador (sessão autenticada)
+browser_profile/
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache & build
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+*.egg
+dist/
+build/
+*.spec
+
+# Downloads e arquivos temporários de editais e propostas
+downloads/
+downloads_editais/
+editais/
+scratch/
+
+# Logs do sistema
+*.log
+logs/
+
+# IDEs e editores
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
