@@ -213,7 +213,9 @@ CREATE TRIGGER trg_itens_licitacao_atualizado_em
 -- -------------------------------------------------------------
 DROP VIEW IF EXISTS resumo_lances_por_item CASCADE;
 
-CREATE VIEW resumo_lances_por_item AS
+CREATE VIEW resumo_lances_por_item
+WITH (security_invoker = true)
+AS
 SELECT
     il.licitacao_id,
     l.numero_uasg,
