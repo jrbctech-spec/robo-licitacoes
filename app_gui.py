@@ -34,7 +34,16 @@ import customtkinter as ctk
 # ── Módulos do projeto ────────────────────────────────────────────────────────
 try:
     from config import ModoOperacao, settings
-    from edital_parser import EditalParser, ItemEdital, ResultadoEdital
+    from edital_parser import (
+        EditalParser,
+        ItemEdital,
+        ResultadoEdital,
+        InteligenciaComprasGov,
+        RiscoDesclassificacao,
+        SeveridadeRisco,
+        CriterioJulgamento,
+        TipoModoDisputa,
+    )
     from engine import MotorDecisao, RegraItem
     from supabase_client import log_queue, testar_conexao
     from diagnostics import DiagnosticoSistema, StatusDiagnostico
@@ -49,6 +58,14 @@ try:
     from supabase_client import salvar_oportunidade, listar_oportunidades_salvas
     from proposta_parser import PropostaParser
     import drive_scanner
+    from license_manager import (
+        validar_licenca,
+        salvar_chave_local,
+        obter_chave_salva,
+        obter_hwid,
+        StatusLicenca,
+        ResultadoValidacao,
+    )
     _MODULES_OK = True
 except Exception as _import_err:
     _MODULES_OK = False
@@ -304,11 +321,8 @@ class _BotComEventos:
 
                         # Simula estado do mercado (em produção, leria da página)
                         import random
-                        lance_mercado = (
-                            estado.nosso_ultimo_lance * 0.99
-                            if estado.nosso_ultimo_lance
-                            else estado.regra.preco_inicial_proposta * 0.95
-                        )
+                        ultimo_meu = float(estado.meu_ultimo_lance) if estado.meu_ultimo_lance else float(estado.regra.preco_inicial_proposta)
+                        lance_mercado = round(ultimo_meu * 0.99, 2)
                         posicao = random.choice([1, 2, 3])
 
                         self.motor.atualizar_estado(
@@ -323,7 +337,7 @@ class _BotComEventos:
                             self._log("ERROR", f"Erro no motor item {num_item}: {exc}")
                             continue
 
-                        if decisao.bloqueado_stop_loss:
+                        if decisao.bloqueado_stop_loss or decisao.estado_resultante.value == "PISO_ATINGIDO":
                             self._emit("lance", {
                                 "item": num_item,
                                 "valor": None,
@@ -347,11 +361,14 @@ class _BotComEventos:
                             self._log(
                                 "INFO",
                                 f"✅ {modo_str} Lance Item {num_item}: "
-                                f"R$ {decisao.valor_lance:.4f} | {decisao.motivo}",
+                                f"R$ {decisao.valor_lance:.2f} | {decisao.motivo}",
+                            )
+                            self.motor.confirmar_lance_enviado(
+                                numero_item=num_item,
+                                valor_confirmado=decisao.valor_lance,
                             )
                             self.motor.atualizar_estado(
                                 numero_item=num_item,
-                                nosso_ultimo_lance=decisao.valor_lance,
                                 nossa_posicao=1,
                             )
                             # Registra no Supabase
@@ -465,16 +482,15 @@ class PainelEditais(ctk.CTkFrame):
         self._item_rows: list[ItemRow] = []
         self._resultado_edital: Optional[ResultadoEdital] = None
         self._frame_rows: list[ctk.CTkFrame] = []
-        self._pastas_drive_map: dict[str, str] = {}
         self._build()
 
     def _build(self) -> None:
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # ── Card de Importação (Local, Drive, PNCP, Proposta) ─────────────────
+        # ── Card de Importação (PDF Local, Pasta Local, PNCP, Proposta) ───────
         card_upload = CardFrame(self)
-        card_upload.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_upload.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 6))
         card_upload.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -519,6 +535,7 @@ class PainelEditais(ctk.CTkFrame):
             height=30,
             fg_color=COR["accent_blue"],
             hover_color="#1F6FEB",
+            text_color="#FFFFFF",
             font=ctk.CTkFont(size=11, weight="bold"),
             corner_radius=6,
         ).grid(row=2, column=0, padx=10, pady=(0, 8), sticky="ew")
@@ -645,9 +662,84 @@ class PainelEditais(ctk.CTkFrame):
         )
         self._lbl_proposta_status.grid(row=0, column=2, padx=10, sticky="w")
 
+        # ── Painel de Inteligência Regulatória Compras.gov.br ─────────────────
+        self._card_intel = CardFrame(self)
+        self._card_intel.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        self._card_intel.grid_columnconfigure(0, weight=1)
+
+        intel_top = ctk.CTkFrame(self._card_intel, fg_color="transparent")
+        intel_top.grid(row=0, column=0, sticky="ew", padx=10, pady=(6, 2))
+        intel_top.grid_columnconfigure(3, weight=1)
+
+        self._lbl_intel_criterio = ctk.CTkLabel(
+            intel_top,
+            text="🎯 Critério: Menor Preço por Item",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["accent_blue"],
+        )
+        self._lbl_intel_criterio.grid(row=0, column=0, padx=(0, 10), sticky="w")
+
+        self._lbl_intel_modo = ctk.CTkLabel(
+            intel_top,
+            text="⚡ Modo: Aberto (IN 73/2022)",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["accent_purple"],
+        )
+        self._lbl_intel_modo.grid(row=0, column=1, padx=10, sticky="w")
+
+        self._lbl_intel_degrau = ctk.CTkLabel(
+            intel_top,
+            text="📉 Degrau: R$ 0,01",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["accent_amber"],
+        )
+        self._lbl_intel_degrau.grid(row=0, column=2, padx=10, sticky="w")
+
+        self._lbl_intel_horario = ctk.CTkLabel(
+            intel_top,
+            text="⏰ Sessão: Horário de Brasília (UTC-3)",
+            font=ctk.CTkFont(size=11),
+            text_color=COR["text_secondary"],
+        )
+        self._lbl_intel_horario.grid(row=0, column=3, padx=10, sticky="w")
+
+        self._btn_ver_riscos = ctk.CTkButton(
+            intel_top,
+            text="🛡️  Matriz de Conformidade & Riscos",
+            command=self._abrir_modal_riscos,
+            height=26,
+            fg_color=COR["bg_input"],
+            hover_color=COR["border"],
+            text_color=COR["accent_green"],
+            font=ctk.CTkFont(size=10, weight="bold"),
+            corner_radius=6,
+        )
+        self._btn_ver_riscos.grid(row=0, column=4, padx=(8, 0), sticky="e")
+
+        intel_bottom = ctk.CTkFrame(self._card_intel, fg_color="transparent")
+        intel_bottom.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 6))
+        intel_bottom.grid_columnconfigure(0, weight=1)
+
+        self._lbl_intel_desc = ctk.CTkLabel(
+            intel_bottom,
+            text="💡 Regras operacionais do Compras.gov.br cruzadas com o Aviso de Contratação / Termo de Referência.",
+            font=ctk.CTkFont(size=10),
+            text_color=COR["text_muted"],
+            anchor="w",
+        )
+        self._lbl_intel_desc.grid(row=0, column=0, sticky="w")
+
+        self._lbl_intel_riscos_resumo = ctk.CTkLabel(
+            intel_bottom,
+            text="🛡️ 5 verificações regulatórias ativas (Lei 14.133 / IN 73)",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            text_color=COR["accent_green"],
+        )
+        self._lbl_intel_riscos_resumo.grid(row=0, column=1, sticky="e")
+
         # ── Legenda da tabela ─────────────────────────────────────────────────
         card_header = CardFrame(self)
-        card_header.grid(row=1, column=0, sticky="ew", pady=(0, 2))
+        card_header.grid(row=2, column=0, sticky="ew", pady=(0, 2))
         card_header.configure(corner_radius=8, border_width=0, fg_color=COR["bg_deep"])
 
         headers = [
@@ -679,7 +771,7 @@ class PainelEditais(ctk.CTkFrame):
             scrollbar_button_color=COR["border"],
             scrollbar_button_hover_color=COR["accent_blue"],
         )
-        self._scroll.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        self._scroll.grid(row=3, column=0, sticky="nsew", pady=(0, 8))
         self._scroll.grid_columnconfigure([0, 1, 2, 3, 4, 5, 6, 7], weight=1)
 
         # ── Placeholder ───────────────────────────────────────────────────────
@@ -732,6 +824,22 @@ class PainelEditais(ctk.CTkFrame):
         self._lbl_pdf.configure(text_color=COR["text_primary"])
         self.app.log("INFO", f"Carregando edital: {Path(caminho).name}...")
 
+        # Limpa tabela e exibe feedback de carregamento imediato
+        for frame in self._frame_rows:
+            frame.destroy()
+        self._frame_rows.clear()
+        self._item_rows.clear()
+
+        lbl_load = ctk.CTkLabel(
+            self._scroll,
+            text="⏳ Lendo e analisando edital...\n(Extraindo regras do certame e identificando tabela de itens via IA)",
+            text_color=COR["accent_blue"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            justify="center",
+        )
+        lbl_load.grid(row=0, column=0, columnspan=8, pady=30)
+        self._frame_rows.append(lbl_load)
+
         # Parsing em thread separada para não travar a GUI
         threading.Thread(
             target=self._parse_pdf_thread,
@@ -762,10 +870,33 @@ class PainelEditais(ctk.CTkFrame):
             )
             return
 
-        arq_pdf = pdfs[0]
+        # Priorizar arquivos que contenham 'aviso', 'edital', 'tr', 'termo'
+        candidatos = sorted(
+            pdfs,
+            key=lambda p: (
+                0 if any(k in p.name.lower() for k in ["aviso", "edital", "tr", "termo"]) else 1
+            ),
+        )
+        arq_pdf = candidatos[0]
         self._var_pdf.set(f"[Pasta Local] {arq_pdf.name}")
         self._lbl_pdf.configure(text_color=COR["accent_blue"])
         self.app.log("INFO", f"📖 Lendo PDF da pasta local: {arq_pdf.name}...")
+
+        # Limpa tabela e exibe feedback de carregamento imediato
+        for frame in self._frame_rows:
+            frame.destroy()
+        self._frame_rows.clear()
+        self._item_rows.clear()
+
+        lbl_load = ctk.CTkLabel(
+            self._scroll,
+            text="⏳ Lendo e analisando edital da pasta local...\n(Extraindo regras do certame e identificando tabela de itens via IA)",
+            text_color=COR["accent_blue"],
+            font=ctk.CTkFont(size=12, weight="bold"),
+            justify="center",
+        )
+        lbl_load.grid(row=0, column=0, columnspan=8, pady=30)
+        self._frame_rows.append(lbl_load)
 
         threading.Thread(
             target=self._parse_pdf_thread,
@@ -1051,7 +1182,17 @@ class PainelEditais(ctk.CTkFrame):
     def _on_pncp_erro(self, msg_erro: str) -> None:
         self._btn_pncp.configure(state="normal", text="🌐  Buscar no PNCP")
         self.app.log("ERROR", f"❌ Falha ao buscar no PNCP: {msg_erro}")
-        messagebox.showerror("Erro PNCP", f"Falha ao consultar PNCP:\n{msg_erro}", parent=self.app)
+        if "timed out" in msg_erro.lower() or "timeout" in msg_erro.lower():
+            orientacao = (
+                "O portal oficial do Governo (pncp.gov.br) não respondeu a tempo (Timeout de Conexão).\n\n"
+                "💡 Como prosseguir sem o PNCP:\n"
+                "1. Clique no botão azul '📂 Selecionar PDF' e carregue o arquivo do Edital diretamente do seu computador.\n"
+                "2. Ou utilize o botão roxo '📁 Selecionar Pasta Local' para carregar a pasta do processo.\n"
+                "3. Caso queira usar o PNCP, tente novamente em alguns instantes quando o portal do governo restabelecer."
+            )
+            messagebox.showwarning("Servidor do PNCP Indisponível (Timeout)", orientacao, parent=self.app)
+        else:
+            messagebox.showerror("Erro PNCP", f"Falha ao consultar PNCP:\n{msg_erro}", parent=self.app)
 
     def _importar_proposta_pdf(self) -> None:
         """Lê a proposta comercial da empresa em PDF e preenche os custos na tabela (proposta_parser.py)."""
@@ -1099,6 +1240,179 @@ class PainelEditais(ctk.CTkFrame):
         self.app.log("INFO", msg)
         messagebox.showinfo("Proposta Importada", msg, parent=self.app)
 
+    def _abrir_modal_riscos(self) -> None:
+        """Exibe modal com a Matriz Completa de Conformidade Regulatória e Riscos de Desclassificação."""
+        if not self._resultado_edital or not getattr(self._resultado_edital, "inteligencia_compras_gov", None):
+            intel = InteligenciaComprasGov()
+        else:
+            intel = self._resultado_edital.inteligencia_compras_gov
+
+        modal = ctk.CTkToplevel(self.app)
+        modal.title("🛡️ Matriz de Conformidade & Riscos — Compras.gov.br")
+        modal.geometry("860x640")
+        modal.minsize(700, 500)
+        modal.grab_set()
+
+        # Cabeçalho
+        top_bar = ctk.CTkFrame(modal, fg_color=COR["bg_panel"], corner_radius=0, height=65)
+        top_bar.pack(fill="x", padx=0, pady=0)
+        top_bar.pack_propagate(False)
+
+        ctk.CTkLabel(
+            top_bar,
+            text="🛡️ MATRIZ DE CONFORMIDADE OPERACIONAL & RISCOS DE DESCLASSIFICAÇÃO",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=COR["accent_blue"],
+        ).pack(anchor="w", padx=16, pady=(10, 2))
+
+        ctk.CTkLabel(
+            top_bar,
+            text="Cruzamento do Aviso de Contratação / Termo de Referência com a Lei nº 14.133/2021 e IN SEGES/ME nº 73/2022",
+            font=ctk.CTkFont(size=10),
+            text_color=COR["text_muted"],
+        ).pack(anchor="w", padx=16)
+
+        # Container scrollável dos riscos
+        scroll_riscos = ctk.CTkScrollableFrame(
+            modal,
+            fg_color=COR["bg_deep"],
+            scrollbar_button_color=COR["border"],
+            scrollbar_button_hover_color=COR["accent_blue"],
+        )
+        scroll_riscos.pack(fill="both", expand=True, padx=16, pady=12)
+
+        # Bloco de Destaque das Regras Operacionais
+        card_regras = CardFrame(scroll_riscos)
+        card_regras.pack(fill="x", pady=(0, 10))
+        
+        ctk.CTkLabel(
+            card_regras,
+            text="📋 REGRAS OPERACIONAIS VINCULANTES IDENTIFICADAS",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COR["text_primary"],
+        ).pack(anchor="w", padx=12, pady=(10, 6))
+
+        grid_regras = ctk.CTkFrame(card_regras, fg_color="transparent")
+        grid_regras.pack(fill="x", padx=12, pady=(0, 10))
+        grid_regras.grid_columnconfigure((0, 1), weight=1)
+
+        ctk.CTkLabel(
+            grid_regras,
+            text=f"🎯 Critério de Julgamento: {intel.criterio_julgamento_legivel}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["accent_blue"],
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=2)
+
+        ctk.CTkLabel(
+            grid_regras,
+            text=f"⚡ Modo de Disputa: {intel.modo_disputa.nome_legivel}",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["accent_purple"],
+            anchor="w",
+        ).grid(row=0, column=1, sticky="w", pady=2)
+
+        ctk.CTkLabel(
+            grid_regras,
+            text=f"📉 Intervalo / Degrau Mínimo: {intel.intervalo_lances.descricao}",
+            font=ctk.CTkFont(size=11),
+            text_color=COR["accent_amber"],
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=2)
+
+        cron_txt = f"{intel.cronograma.data_abertura or 'A Definir'} às {intel.cronograma.hora_abertura or '09:00'} ({intel.cronograma.fuso_horario})"
+        ctk.CTkLabel(
+            grid_regras,
+            text=f"⏰ Horário da Sessão Pública: {cron_txt}",
+            font=ctk.CTkFont(size=11),
+            text_color=COR["text_secondary"],
+            anchor="w",
+        ).grid(row=1, column=1, sticky="w", pady=2)
+
+        # Lista de Riscos
+        ctk.CTkLabel(
+            scroll_riscos,
+            text="⚠️ RISCOS DE DESCLASSIFICAÇÃO E DIRETRIZES DE MITIGAÇÃO",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COR["accent_amber"],
+        ).pack(anchor="w", padx=4, pady=(6, 4))
+
+        cores_sev = {
+            SeveridadeRisco.ALTO: (COR["accent_red"], "🔴 CRÍTICO / ALTO"),
+            SeveridadeRisco.MEDIO: (COR["accent_amber"], "🟡 MÉDIO / ATENÇÃO"),
+            SeveridadeRisco.BAIXO: (COR["accent_green"], "🟢 BAIXO / OPERACIONAL"),
+            SeveridadeRisco.INFO: (COR["accent_blue"], "ℹ️ INFORMAÇÃO"),
+        }
+
+        for r in intel.riscos_identificados:
+            cor_tag, txt_tag = cores_sev.get(r.severidade, (COR["text_muted"], r.severidade.value))
+            c_card = CardFrame(scroll_riscos)
+            c_card.pack(fill="x", pady=4)
+
+            # Cabeçalho do risco
+            r_header = ctk.CTkFrame(c_card, fg_color="transparent")
+            r_header.pack(fill="x", padx=12, pady=(8, 4))
+            r_header.grid_columnconfigure(0, weight=1)
+
+            ctk.CTkLabel(
+                r_header,
+                text=r.titulo,
+                font=ctk.CTkFont(size=12, weight="bold"),
+                text_color=COR["text_primary"],
+            ).grid(row=0, column=0, sticky="w")
+
+            ctk.CTkLabel(
+                r_header,
+                text=txt_tag,
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=cor_tag,
+            ).grid(row=0, column=1, sticky="e")
+
+            # Descrição do Risco
+            ctk.CTkLabel(
+                c_card,
+                text=r.descricao,
+                font=ctk.CTkFont(size=11),
+                text_color=COR["text_secondary"],
+                justify="left",
+                wraplength=680,
+            ).pack(anchor="w", padx=12, pady=(0, 4))
+
+            # Base Legal e Mitigação
+            f_meta = ctk.CTkFrame(c_card, fg_color=COR["bg_surface"], corner_radius=6)
+            f_meta.pack(fill="x", padx=12, pady=(2, 8))
+
+            ctk.CTkLabel(
+                f_meta,
+                text=f"📜 Base Legal: {r.base_legal}",
+                font=ctk.CTkFont(size=10, weight="bold"),
+                text_color=COR["accent_blue"],
+            ).pack(anchor="w", padx=8, pady=(4, 2))
+
+            ctk.CTkLabel(
+                f_meta,
+                text=f"🛡️ Mitigação / Ação: {r.sugestao_mitigacao}",
+                font=ctk.CTkFont(size=10),
+                text_color=COR["accent_green"],
+                wraplength=660,
+                justify="left",
+            ).pack(anchor="w", padx=8, pady=(2, 6))
+
+        # Botão Fechar Modal
+        b_bottom = ctk.CTkFrame(modal, fg_color="transparent")
+        b_bottom.pack(fill="x", padx=16, pady=12)
+
+        ctk.CTkButton(
+            b_bottom,
+            text="✅ Entendido / Fechar Painel de Conformidade",
+            command=modal.destroy,
+            height=34,
+            fg_color=COR["accent_blue"],
+            hover_color="#1F6FEB",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        ).pack(side="right")
+
     def _on_proposta_erro(self, erro_msg: str) -> None:
         self._lbl_proposta_status.configure(text=f"❌ Erro na proposta: {erro_msg}", text_color=COR["accent_red"])
         self.app.log("ERROR", f"Erro ao ler proposta: {erro_msg}")
@@ -1111,10 +1425,12 @@ class PainelEditais(ctk.CTkFrame):
             # Atualiza GUI na thread principal
             self.after(0, self._popular_tabela, resultado)
         except Exception as exc:
-            self.after(0, lambda: self.app.log("ERROR", f"Erro ao parsear PDF: {exc}"))
+            self.after(0, lambda e=exc: self.app.log("ERROR", f"Erro ao parsear PDF: {e}"))
 
     def _popular_tabela(self, resultado: ResultadoEdital) -> None:
-        """Popula a tabela de itens com os dados do edital (MainThread)."""
+        """Popula a tabela de itens com os dados do edital e atualiza a inteligência regulatória."""
+        self._resultado_edital = resultado
+
         # Limpa linhas existentes
         for frame in self._frame_rows:
             frame.destroy()
@@ -1124,21 +1440,54 @@ class PainelEditais(ctk.CTkFrame):
         if self._lbl_placeholder.winfo_exists():
             self._lbl_placeholder.destroy()
 
-        modo = resultado.regras.modo_disputa.upper()
+        # ── Atualização do Painel de Inteligência Compras.gov.br ─────────────
+        intel = getattr(resultado, "inteligencia_compras_gov", None) or InteligenciaComprasGov()
+        self._lbl_intel_criterio.configure(text=f"🎯 Critério: {intel.criterio_julgamento_legivel}")
+        self._lbl_intel_modo.configure(text=f"⚡ Modo: {intel.modo_disputa.nome_legivel}")
+        self._lbl_intel_degrau.configure(text=f"📉 Degrau: {intel.intervalo_lances.descricao.split('(')[0].strip()}")
+
+        cron = intel.cronograma
+        if cron.data_abertura and cron.hora_abertura:
+            self._lbl_intel_horario.configure(
+                text=f"⏰ Sessão: {cron.data_abertura} às {cron.hora_abertura} ({cron.fuso_horario})",
+                text_color=COR["accent_green"],
+            )
+        elif cron.hora_abertura:
+            self._lbl_intel_horario.configure(
+                text=f"⏰ Sessão: {cron.hora_abertura} ({cron.fuso_horario})",
+                text_color=COR["accent_green"],
+            )
+        else:
+            self._lbl_intel_horario.configure(
+                text="⏰ Sessão: Horário de Brasília (UTC-3)",
+                text_color=COR["text_secondary"],
+            )
+
+        self._lbl_intel_desc.configure(text=f"💡 {intel.modo_disputa.descricao_operacional}")
+        n_riscos = len(intel.riscos_identificados)
+        tem_alto = any(r.severidade == SeveridadeRisco.ALTO for r in intel.riscos_identificados)
+        self._lbl_intel_riscos_resumo.configure(
+            text=f"🛡️ {n_riscos} verificações regulatórias ativas (Lei 14.133 / IN 73)",
+            text_color=COR["accent_amber"] if tem_alto else COR["accent_green"],
+        )
+
         self.app.log(
             "INFO",
-            f"✅ Edital carregado | {len(resultado.itens)} item(s) | Modo: {modo}"
+            f"✅ Edital carregado | {len(resultado.itens)} item(s) | Critério: {intel.criterio_julgamento_legivel} | Modo: {intel.modo_disputa.nome_legivel}"
         )
 
         if not resultado.itens:
+            detalhe = ""
+            if resultado.erros_parsing:
+                detalhe = "\n\n" + "\n".join(f"• {e}" for e in resultado.erros_parsing[:2])
             lbl = ctk.CTkLabel(
                 self._scroll,
-                text="⚠️  Nenhum item identificado automaticamente.\nInsira manualmente no painel de sessão.",
+                text=f"⚠️  Nenhum item identificado automaticamente no PDF.{detalhe}\n\n💡 Dica: Você também pode buscar os dados diretamente pelo campo 'API do PNCP' ao lado.",
                 text_color=COR["accent_amber"],
                 font=ctk.CTkFont(size=12),
                 justify="center",
             )
-            lbl.grid(row=0, column=0, columnspan=6, pady=30)
+            lbl.grid(row=0, column=0, columnspan=8, pady=30)
             self._frame_rows.append(lbl)
             return
 
@@ -1147,8 +1496,8 @@ class PainelEditais(ctk.CTkFrame):
 
         n = len(resultado.itens)
         self._lbl_resumo.configure(
-            text=f"  {n} item(s) | Modo: {modo} | Dec.: "
-                 f"{resultado.regras.decremento_global_valor or resultado.regras.decremento_global_percent or 'N/D'}"
+            text=f"  {n} item(ns) | Critério: {intel.criterio_julgamento_legivel} | Modo: {intel.modo_disputa.nome_legivel} | "
+                 f"Dec.: {resultado.regras.decremento_global_valor or resultado.regras.decremento_global_percent or 'R$ 0,01'}"
         )
         self._btn_confirmar.configure(state="normal")
 
@@ -2347,6 +2696,7 @@ class App(ctk.CTk):
 
         self._build_ui()
         self._verificar_conexao_async()
+        self._verificar_licenca_async()
         self._iniciar_loop_eventos()
 
     def _build_ui(self) -> None:
@@ -2463,7 +2813,21 @@ class App(ctk.CTk):
             font=ctk.CTkFont(size=11, weight="bold"),
             corner_radius=6,
         )
-        self._btn_diag.grid(row=0, column=4, padx=(4, 16), pady=12, sticky="ns")
+        self._btn_diag.grid(row=0, column=4, padx=4, pady=12, sticky="ns")
+
+        # Botão Licença
+        self._btn_licenca = ctk.CTkButton(
+            header,
+            text="🔑  Licença",
+            command=self._exibir_modal_licenca,
+            height=32,
+            fg_color=COR["bg_card"],
+            hover_color=COR["border"],
+            text_color=COR["text_primary"],
+            font=ctk.CTkFont(size=11, weight="bold"),
+            corner_radius=6,
+        )
+        self._btn_licenca.grid(row=0, column=5, padx=(4, 16), pady=12, sticky="ns")
 
         # ── CONTEÚDO PRINCIPAL ────────────────────────────────────────────────
         self.tab_view = ctk.CTkTabview(
@@ -2662,6 +3026,179 @@ class App(ctk.CTk):
                 text_color=COR["accent_red"],
             )
             self.log("ERROR", "❌ Falha na conexão com Supabase. Verifique o .env.")
+
+    # ── Gerenciamento de Licença & Mensalidade ────────────────────────────────
+
+    def _verificar_licenca_async(self) -> None:
+        """Verifica a licença do cliente no Supabase em background."""
+        def _check() -> None:
+            try:
+                res = validar_licenca()
+                self.after(0, self._atualizar_status_licenca, res)
+            except Exception as exc:
+                logger.warning(f"Erro ao verificar licença: {exc}")
+
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _atualizar_status_licenca(self, res: Any) -> None:
+        """Atualiza o botão/status da licença no header."""
+        if res.valida:
+            dias_txt = f"{res.dias_restantes}d" if res.dias_restantes is not None else "Ativa"
+            self._btn_licenca.configure(
+                text=f"🔑  {dias_txt} ✅",
+                fg_color=COR["bg_card"],
+                text_color=COR["accent_green"],
+            )
+            self.log("INFO", f"🔑 Licença ativa: {res.cliente_nome or 'Cliente'} ({res.mensagem})")
+        else:
+            self._btn_licenca.configure(
+                text="🔑  Ativar Licença ⚠️",
+                fg_color=COR["accent_red"],
+                hover_color="#D0342C",
+                text_color="#FFFFFF",
+            )
+            self.log("WARNING", f"⚠️ Licença: {res.mensagem}")
+
+    def _exibir_modal_licenca(self) -> None:
+        """Abre janela para visualização de HWID e ativação de chave de licença."""
+        modal = ctk.CTkToplevel(self)
+        modal.title("🔑 Gerenciador de Licença & Assinatura")
+        modal.geometry("560x420")
+        modal.configure(fg_color=COR["bg_deep"])
+        modal.transient(self)
+        modal.grab_set()
+
+        ctk.CTkLabel(
+            modal,
+            text="🔑  Ativação & Gerenciamento de Licença",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COR["text_primary"],
+        ).pack(padx=20, pady=(20, 4), anchor="w")
+
+        ctk.CTkLabel(
+            modal,
+            text="Insira sua chave de ativação para validar a mensalidade no servidor.",
+            font=ctk.CTkFont(size=11),
+            text_color=COR["text_muted"],
+        ).pack(padx=20, pady=(0, 14), anchor="w")
+
+        card = ctk.CTkFrame(modal, fg_color=COR["bg_panel"], corner_radius=10, border_width=1, border_color=COR["border"])
+        card.pack(fill="x", padx=20, pady=(0, 14))
+
+        # Hardware ID da Máquina
+        hwid_frame = ctk.CTkFrame(card, fg_color="transparent")
+        hwid_frame.pack(fill="x", padx=14, pady=(12, 6))
+
+        ctk.CTkLabel(
+            hwid_frame,
+            text="Identificador da Máquina (HWID):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["text_secondary"],
+        ).pack(side="left")
+
+        hwid_val = obter_hwid()
+        lbl_hwid = ctk.CTkLabel(
+            hwid_frame,
+            text=hwid_val,
+            font=ctk.CTkFont(size=11, family="monospace", weight="bold"),
+            text_color=COR["accent_blue"],
+        )
+        lbl_hwid.pack(side="left", padx=8)
+
+        def _copiar_hwid():
+            self.clipboard_clear()
+            self.clipboard_append(hwid_val)
+            messagebox.showinfo("Copiado", f"HWID copiado para a área de transferência:\n{hwid_val}", parent=modal)
+
+        ctk.CTkButton(
+            hwid_frame,
+            text="Copiar",
+            command=_copiar_hwid,
+            width=60, height=24,
+            font=ctk.CTkFont(size=10),
+            fg_color=COR["bg_card"],
+            hover_color=COR["border"],
+        ).pack(side="right")
+
+        # Campo da Chave de Licença
+        ctk.CTkLabel(
+            card,
+            text="Chave de Licença (Ex: JRBC-XXXX-XXXX-XXXX):",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["text_secondary"],
+        ).pack(padx=14, pady=(8, 2), anchor="w")
+
+        chave_salva = obter_chave_salva() or ""
+        entry_chave = ctk.CTkEntry(
+            card,
+            placeholder_text="JRBC-XXXX-XXXX-XXXX",
+            height=34,
+            font=ctk.CTkFont(size=12, family="monospace"),
+            fg_color=COR["bg_input"],
+            border_color=COR["border"],
+        )
+        entry_chave.pack(fill="x", padx=14, pady=(0, 10))
+        if chave_salva:
+            entry_chave.insert(0, chave_salva)
+
+        # Status / Feedback
+        lbl_feedback = ctk.CTkLabel(
+            card,
+            text="",
+            font=ctk.CTkFont(size=11),
+            wraplength=480,
+            justify="left",
+        )
+        lbl_feedback.pack(fill="x", padx=14, pady=(0, 10))
+
+        def _ativar():
+            chave_digitada = entry_chave.get().strip().upper()
+            if not chave_digitada:
+                lbl_feedback.configure(text="❌ Informe uma chave de licença.", text_color=COR["accent_red"])
+                return
+
+            lbl_feedback.configure(text="⏳ Validando licença no Supabase...", text_color=COR["accent_blue"])
+            modal.update()
+
+            def _worker():
+                res = validar_licenca(chave_digitada)
+                def _ui():
+                    if res.valida:
+                        salvar_chave_local(chave_digitada)
+                        lbl_feedback.configure(text=f"✅ {res.mensagem}", text_color=COR["accent_green"])
+                        self._atualizar_status_licenca(res)
+                        messagebox.showinfo("Licença Ativada", f"Licença validada com sucesso para:\n{res.cliente_nome}\n\nVálida por mais {res.dias_restantes} dias.", parent=modal)
+                    else:
+                        lbl_feedback.configure(text=f"❌ {res.mensagem}", text_color=COR["accent_red"])
+                        self._atualizar_status_licenca(res)
+                self.after(0, _ui)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        # Botões de Ação
+        btn_frame = ctk.CTkFrame(modal, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=8)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Validar & Ativar",
+            command=_ativar,
+            height=36,
+            fg_color=COR["accent_green"],
+            hover_color="#2EA043",
+            font=ctk.CTkFont(size=12, weight="bold"),
+        ).pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        ctk.CTkButton(
+            btn_frame,
+            text="Fechar",
+            command=modal.destroy,
+            height=36,
+            width=100,
+            fg_color=COR["bg_card"],
+            hover_color=COR["border"],
+            font=ctk.CTkFont(size=12),
+        ).pack(side="right", padx=(6, 0))
 
     # ── Log público ───────────────────────────────────────────────────────────
 

@@ -237,53 +237,69 @@ def buscar_publicacoes_pncp(
     Endpoint: GET https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao
 
     Filtros suportados:
-      - data_inicial: YYYYMMDD (padrão: 30 dias atrás)
-      - data_final: YYYYMMDD (padrão: 30 dias à frente)
-      - codigo_modalidade: ex 6 (Pregão Eletrônico), 8 (Dispensa), 4 (Concorrência)
-      - uf: Sigla do estado (TO, SP, DF, etc.)
+      - data_inicial: YYYYMMDD (padrão: 20 dias atrás)
+      - data_final: YYYYMMDD (padrão: hoje)
+      - codigo_modalidade: ex 6 (Pregão Eletrônico), 8 (Dispensa), 4 (Concorrência).
+                          Se None ou 'TODAS', consulta as modalidades principais (6, 8, 4).
+      - uf: Sigla do estado (TO, SP, DF, etc.) ou None para todo o Brasil
       - palavra_chave: Filtro de texto no objeto/órgão
-      - pagina, tamanho_pagina: Paginação (mínimo 10 por página)
+      - pagina, tamanho_pagina: Paginação
     """
     from datetime import datetime, timedelta
 
     hoje = datetime.now()
-    if not data_inicial:
-        data_inicial = (hoje - timedelta(days=30)).strftime("%Y%m%d")
     if not data_final:
-        data_final = (hoje + timedelta(days=30)).strftime("%Y%m%d")
+        data_final = hoje.strftime("%Y%m%d")
+    if not data_inicial:
+        data_inicial = (hoje - timedelta(days=20)).strftime("%Y%m%d")
+
+    modalidades_para_consultar = (
+        [codigo_modalidade] if (codigo_modalidade is not None and codigo_modalidade > 0) else [6, 8, 4]
+    )
 
     url = f"{BASE_URL_PNCP}/contratacoes/publicacao"
-    params: dict[str, Any] = {
-        "dataInicial": data_inicial,
-        "dataFinal": data_final,
-        "pagina": pagina,
-        "tamanhoPagina": max(10, tamanho_pagina),
-    }
+    todos_itens: list[dict[str, Any]] = []
+    total_encontrados = 0
 
-    if codigo_modalidade is not None and codigo_modalidade > 0:
-        params["codigoModalidadeContratacao"] = codigo_modalidade
+    with httpx.Client(timeout=12.0, headers=HEADERS_HTTP) as client:
+        for mod in modalidades_para_consultar:
+            params: dict[str, Any] = {
+                "dataInicial": data_inicial,
+                "dataFinal": data_final,
+                "codigoModalidadeContratacao": mod,
+                "pagina": pagina,
+                "tamanhoPagina": max(10, min(50, tamanho_pagina)),
+            }
+            if uf and uf.strip().upper() != "TODAS":
+                params["uf"] = uf.strip().upper()
 
-    if uf and uf.strip().upper() != "TODAS":
-        params["uf"] = uf.strip().upper()
-
-    logger.info(f"PNCP buscar_publicacoes_pncp: params={params}")
-    with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
-        resp = client.get(url, params=params)
-        resp.raise_for_status()
-        data_json = resp.json()
+            try:
+                resp = client.get(url, params=params)
+                if resp.status_code == 200:
+                    data_json = resp.json()
+                    itens = data_json.get("data", [])
+                    todos_itens.extend(itens)
+                    total_encontrados += data_json.get("totalRegistros", len(itens))
+                else:
+                    logger.warning(f"Aviso PNCP modalidade {mod}: HTTP {resp.status_code} - {resp.text[:120]}")
+            except Exception as exc_req:
+                logger.warning(f"Erro ao consultar modalidade {mod} no PNCP: {exc_req}")
 
     # Aplica filtro por palavra-chave localmente
     if palavra_chave and palavra_chave.strip():
         kw = palavra_chave.strip().lower()
-        itens_orig = data_json.get("data", [])
-        itens_filtrados = [
-            i for i in itens_orig
-            if kw in i.get("objetoCompra", "").lower() or kw in i.get("orgaoEntidade", {}).get("razaoSocial", "").lower()
+        todos_itens = [
+            i for i in todos_itens
+            if kw in (i.get("objetoCompra") or "").lower()
+            or kw in (i.get("orgaoEntidade", {}).get("razaoSocial") or "").lower()
         ]
-        data_json["data"] = itens_filtrados
-        data_json["totalRegistros"] = len(itens_filtrados)
 
-    return data_json
+    return {
+        "data": todos_itens,
+        "totalRegistros": len(todos_itens),
+        "numeroPagina": pagina,
+        "empty": len(todos_itens) == 0,
+    }
 
 
 def baixar_anexos_edital_pncp(

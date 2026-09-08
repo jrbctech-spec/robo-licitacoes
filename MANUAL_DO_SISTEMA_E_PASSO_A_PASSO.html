@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Manual do Sistema & Guia Passo a Passo — Robô de Licitações JRBC</title>
+  <style>
+    :root {
+      --primary: #0066cc;
+      --primary-dark: #004d99;
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --text: #1e293b;
+      --text-muted: #64748b;
+      --border: #e2e8f0;
+      --success: #10b981;
+      --warning: #f59e0b;
+      --danger: #ef4444;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      line-height: 1.6;
+      color: var(--text);
+      background-color: var(--bg);
+      margin: 0;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: var(--card-bg);
+      padding: 40px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.05);
+      border: 1px solid var(--border);
+    }
+    header {
+      text-align: center;
+      border-bottom: 2px solid var(--border);
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+    }
+    h1 { color: var(--primary); margin: 0 0 8px 0; font-size: 26px; }
+    h2 { color: var(--primary-dark); margin-top: 32px; border-bottom: 1px solid var(--border); padding-bottom: 8px; font-size: 20px; }
+    h3 { color: var(--text); margin-top: 24px; font-size: 16px; }
+    p, li { font-size: 14px; }
+    code {
+      background: #f1f5f9;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: Consolas, Monaco, "Courier New", monospace;
+      font-size: 13px;
+      color: #0f172a;
+    }
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 16px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    pre code { background: transparent; color: inherit; padding: 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+      font-size: 13px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 10px 14px;
+      text-align: left;
+    }
+    th {
+      background-color: #f1f5f9;
+      font-weight: bold;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 8px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge-success { background: #dcfce7; color: #166534; }
+    .badge-warning { background: #fef3c7; color: #92400e; }
+    .alert {
+      padding: 14px 18px;
+      border-radius: 8px;
+      margin: 16px 0;
+      font-size: 13px;
+      background: #eff6ff;
+      border-left: 4px solid var(--primary);
+    }
+    footer {
+      margin-top: 40px;
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      padding-top: 20px;
+    }
+    @media print {
+      body { background: white; padding: 0; }
+      .container { box-shadow: none; border: none; padding: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>⚡ Robô de Licitações JRBC</h1>
+      <p><b>Manual de Engenharia, Operação de Pregão e Guia de Implantação Comercial</b></p>
+      <span class="badge badge-success">Versão 1.0 — 100% Português (Brasil)</span>
+    </header>
+
+    <h2>1. Visão Geral do Sistema</h2>
+    <p>O <b>Robô de Licitações JRBC</b> é uma solução profissional para automação, análise preditiva e participação estratégica em pregões eletrônicos no portal <b>Compras.gov.br</b> (Comprasnet Web) e <b>PNCP</b>.</p>
+    <ul>
+      <li><b>Interface Gráfica:</b> Dark Mode moderno em CustomTkinter.</li>
+      <li><b>Automação:</b> Playwright Chromium com perfil persistente anti-detecção.</li>
+      <li><b>Leitura de Editais & Propostas:</b> Extração multi-estratégia (RegEx) + Fallback Google Gemini AI.</li>
+      <li><b>Segurança:</b> Dupla trava rígida de <b>Stop-Loss</b> em memória RAM com zero latência.</li>
+      <li><b>Banco de Dados:</b> Supabase PostgreSQL na nuvem com logs assíncronos.</li>
+    </ul>
+
+    <h2>2. Configuração do Banco de Dados (Supabase)</h2>
+    <div class="alert">
+      <b>Como ativar:</b> Acesse o <i>SQL Editor</i> no painel do Supabase, cole o código do arquivo <code>migration.sql</code> e execute (Run).
+    </div>
+    <p>Tabelas criadas:</p>
+    <ul>
+      <li><code>licitacoes</code>: Processos e pregões monitorados.</li>
+      <li><code>itens_licitacao</code>: Lotes, custos, margens mínimas e stop-losses.</li>
+      <li><code>historico_lances</code>: Registro auditável de todos os lances gerados.</li>
+      <li><code>logs_sessao</code>: Histórico de logs da sessão.</li>
+      <li><code>oportunidades_salvas</code>: Certames favoritados no buscador do PNCP.</li>
+      <li><code>licencas</code>: Controle de mensalidades, clientes e trava por máquina (HWID).</li>
+    </ul>
+
+    <h2>3. Como Operar o Robô no Dia a Dia</h2>
+    <ol>
+      <li><b>Importação do Edital:</b> Busque no PNCP por UF/Palavra-chave ou carregue o PDF na aba <i>Editais & Custos</i>.</li>
+      <li><b>Declaração de Custos:</b> Informe o Custo Unitário e a Margem Mínima de lucro. O sistema calcula na hora o Stop-Loss.</li>
+      <li><b>Login no Compras.gov.br:</b> Abra o navegador pela aba <i>Sessão & Lances</i> e autentique com seu Gov.br / Certificado Digital (a sessão fica salva).</li>
+      <li><b>Início da Disputa:</b> Cole o link da sala de lances, selecione <i>SIMULAÇÃO</i> ou <i>REAL</i> e clique em <i>Iniciar Monitoramento</i>.</li>
+    </ol>
+
+    <h2>4. Proteção Financeira (Stop-Loss)</h2>
+    <p>O robô garante que nenhum lance com prejuízo seja enviado:</p>
+    <pre><code>Preço Mínimo (Stop-Loss) = Custo Unitário × (1 + Margem Mínima% / 100)</code></pre>
+    <ul>
+      <li>Se o concorrente der um lance abaixo do seu preço mínimo, o robô <b>bloqueia o envio</b>.</li>
+      <li>Se você já for o 1º colocado (liderando a disputa), o robô <b>aguarda</b> e não dá lances contra você mesmo.</li>
+    </ul>
+
+    <h2>5. Como Vender e Ativar Licenças</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Modelo de Cobrança</th>
+          <th>Valor Médio de Mercado</th>
+          <th>Descrição</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><b>Mensalidade (SaaS)</b></td>
+          <td>R$ 350 a R$ 890 / mês</td>
+          <td>Acesso contínuo com suporte e atualizações.</td>
+        </tr>
+        <tr>
+          <td><b>Licença Vitalícia</b></td>
+          <td>R$ 2.500 a R$ 5.500</td>
+          <td>Pagamento único com 6 a 12 meses de suporte.</td>
+        </tr>
+        <tr>
+          <td><b>Taxa de Setup</b></td>
+          <td>R$ 500 a R$ 1.500</td>
+          <td>Instalação e acompanhamento do primeiro pregão.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Como gerar a chave para um cliente:</h3>
+    <pre><code>from license_manager import criar_nova_licenca
+
+lic = criar_nova_licenca("Empresa XPTO Ltda", "12.345.678/0001-90", dias_validade=30)
+print("Chave gerada:", lic["chave_licenca"])</code></pre>
+
+    <h2>6. Como Gerar o Instalador Windows (.exe)</h2>
+    <ol>
+      <li>Execute <code>python build.py</code> para compilar a pasta <code>dist/robo_licitacoes</code>.</li>
+      <li>Abra o arquivo <code>installer.iss</code> no <b>Inno Setup Compiler</b>.</li>
+      <li>Pressione <b>Ctrl + F9</b> para gerar o arquivo <code>Instalador_Robo_Licitacoes.exe</code> na pasta <code>dist_installer/</code>.</li>
+    </ol>
+
+    <footer>
+      <p><b>Robô de Licitações JRBC</b> — Automação e Inteligência em Pregões Eletrônicos</p>
+      <p>Documento pronto para salvar e arquivar no Google Drive.</p>
+    </footer>
+  </div>
+</body>
+</html>

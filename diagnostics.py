@@ -15,11 +15,10 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 from config import settings
 from supabase_client import get_client, testar_conexao
@@ -55,6 +54,7 @@ class DiagnosticoSistema:
         
         self.checar_env()
         self.checar_supabase_conexao_e_tabelas()
+        self.checar_gemini_ai()
         self.checar_playwright_chromium()
         self.checar_browser_profile()
 
@@ -149,11 +149,11 @@ class DiagnosticoSistema:
             ))
 
             client = get_client()
-            tabelas = ["licitacoes", "itens_licitacao", "historico_lances", "logs_sessao"]
+            tabelas = ["licitacoes", "itens_licitacao", "historico_lances", "logs_sessao", "oportunidades_salvas", "licencas"]
 
             for tab in tabelas:
                 try:
-                    res = client.table(tab).select("id").limit(1).execute()
+                    client.table(tab).select("id").limit(1).execute()
                     self.resultados.append(ItemDiagnostico(
                         categoria="Supabase",
                         nome=f"Tabela '{tab}'",
@@ -186,10 +186,28 @@ class DiagnosticoSistema:
                 mensagem=f"Erro crítico no Supabase: {exc}",
             ))
 
+    def checar_gemini_ai(self) -> None:
+        """Verifica se a chave da API do Google Gemini está configurada."""
+        key = settings.gemini_api_key or os.getenv("GEMINI_API_KEY")
+        if not key or "sua_chave" in key or key.strip() == "":
+            self.resultados.append(ItemDiagnostico(
+                categoria="Gemini AI",
+                nome="Chave de API",
+                status=StatusDiagnostico.WARNING,
+                mensagem="GEMINI_API_KEY não configurada ou com valor padrão.",
+                detalhes="O leitor de editais operará no modo local (RegEx). Insira a chave no .env para ativar a IA.",
+            ))
+        else:
+            self.resultados.append(ItemDiagnostico(
+                categoria="Gemini AI",
+                nome="Chave de API",
+                status=StatusDiagnostico.OK,
+                mensagem=f"Chave configurada ({len(key)} chars) – Fallback com IA ativado.",
+            ))
+
     def checar_playwright_chromium(self) -> None:
         """Verifica se o Playwright e os binários do Chromium estão operacionais."""
         try:
-            import playwright
             import importlib.metadata
             try:
                 pw_version = importlib.metadata.version("playwright")

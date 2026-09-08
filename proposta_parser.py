@@ -21,6 +21,8 @@ from typing import Optional
 
 from pypdf import PdfReader
 
+from config import settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -130,7 +132,7 @@ class PropostaParser:
 
     def _extrair_itens_gemini(self, texto: str, resultado: ResultadoProposta) -> None:
         """Extrai os custos da proposta via Gemini AI (Structured Output JSON)."""
-        api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+        api_key = settings.gemini_api_key or os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
         if not api_key:
             return
 
@@ -153,21 +155,38 @@ class PropostaParser:
                 f"{texto[:12000]}"
             )
 
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
-            )
+            modelos = [
+                "gemini-3.5-flash",
+                "gemini-flash-latest",
+                "gemini-3.1-flash-lite",
+                "gemini-3.5-flash-lite",
+                "gemini-3-flash-preview",
+                "gemini-flash-lite-latest",
+                "gemini-3.6-flash",
+            ]
+            response = None
+            for mod in modelos:
+                try:
+                    response = client.models.generate_content(
+                        model=mod,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            temperature=0.1,
+                        ),
+                    )
+                    if response and response.text:
+                        break
+                except Exception as exc_mod:
+                    logger.warning(f"Tentativa com modelo {mod} na proposta falhou: {exc_mod}")
+                    continue
 
-            if response.text:
+            if response and response.text:
                 data = json.loads(response.text)
                 itens_json = data.get("itens", []) if isinstance(data, dict) else data
 
                 for i in itens_json:
-                    if isinstance(i, dict) and "numero_item" in i and "valor_unitario" in i:
+                    if isinstance(i, dict) and "numero_item" in i and i.get("valor_unitario") is not None:
                         val_u = float(i["valor_unitario"])
                         qtd = float(i.get("quantidade", 1.0))
                         item = ItemProposta(

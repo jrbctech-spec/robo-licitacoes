@@ -159,6 +159,31 @@ CREATE TABLE IF NOT EXISTS oportunidades_salvas (
 COMMENT ON TABLE oportunidades_salvas IS
     'Oportunidades de licitação favoritadas e salvas do PNCP para análise e automação.';
 
+-- -------------------------------------------------------------
+-- TABELA: licencas (Controle de Assinaturas e HWID)
+-- -------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS licencas (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chave_licenca       TEXT UNIQUE NOT NULL,
+    cliente_nome        TEXT NOT NULL,
+    cnpj_ou_cpf         TEXT,
+    hwid                TEXT,
+    status              TEXT NOT NULL DEFAULT 'ativa',
+    valida_ate          TIMESTAMPTZ NOT NULL,
+    plano               TEXT NOT NULL DEFAULT 'mensal',
+    limite_maquinas     INTEGER NOT NULL DEFAULT 1,
+    observacoes         TEXT,
+    criado_em           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    atualizado_em       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE licencas IS
+    'Licenças de uso e controle de mensalidade dos clientes do Robô de Licitações.';
+
+CREATE INDEX IF NOT EXISTS idx_licencas_chave         ON licencas (chave_licenca);
+CREATE INDEX IF NOT EXISTS idx_licencas_status        ON licencas (status);
+CREATE INDEX IF NOT EXISTS idx_licencas_valida_ate    ON licencas (valida_ate);
+
 CREATE INDEX IF NOT EXISTS idx_logs_sessao_id         ON logs_sessao (sessao_id);
 CREATE INDEX IF NOT EXISTS idx_logs_licitacao_id      ON logs_sessao (licitacao_id);
 CREATE INDEX IF NOT EXISTS idx_logs_nivel             ON logs_sessao (nivel);

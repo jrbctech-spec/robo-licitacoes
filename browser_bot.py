@@ -409,20 +409,25 @@ class BrowserBot:
             )
             return
 
-        # ── MODO REAL: Verificação tripla antes de enviar ─────────────────────
+        # ── MODO REAL: Verificação quádrupla antes de enviar ──────────────────
         # Verificação 1: flag de dry_run (já verificada acima)
         # Verificação 2: motor.validar_lance_pre_envio (stop-loss duplo)
         if not self.motor.validar_lance_pre_envio(num_item, valor):
             self._log(
                 "CRITICAL",
                 f"Lance BLOQUEADO pela validação pré-envio | "
-                f"Item {num_item} | Valor R$ {valor:.4f}",
+                f"Item {num_item} | Valor R$ {valor:.2f}",
             )
             return
 
         # Verificação 3: confirmação redundante do valor
         if valor is None or valor <= 0:
             self._log("ERROR", f"Valor de lance inválido: {valor}")
+            return
+
+        # Verificação 4: Trava atômica anti-duplicidade
+        if not self.motor.marcar_lance_em_envio(num_item):
+            self._log("WARNING", f"Envio ignorado para item {num_item}: lance já em trânsito.")
             return
 
         self._enviar_lance_real(page, num_item, valor, decisao)
@@ -441,7 +446,7 @@ class BrowserBot:
         as verificações de segurança em _processar_decisao_lance().
         """
         logger.info(
-            f"🔴 ENVIANDO LANCE REAL | Item {numero_item} | R$ {valor:.4f}"
+            f"🔴 ENVIANDO LANCE REAL | Item {numero_item} | R$ {valor:.2f}"
         )
         valor_formatado = f"{valor:.2f}".replace(".", ",")
 
@@ -479,15 +484,13 @@ class BrowserBot:
 
             self._log(
                 "INFO",
-                f"✅ Lance enviado com sucesso | Item {numero_item} | R$ {valor:.4f}",
+                f"✅ Lance enviado e confirmado no portal | Item {numero_item} | R$ {valor:.2f}",
             )
-            # Atualiza estado em memória
-            self.motor.atualizar_estado(
-                numero_item=numero_item,
-                nosso_ultimo_lance=valor,
-            )
+            # Atualiza MEU ÚLTIMO LANCE e libera a trava de duplicidade
+            self.motor.confirmar_lance_enviado(numero_item, valor)
 
         except Exception as exc:
+            self.motor.abortar_envio_lance(numero_item, str(exc))
             self._log(
                 "ERROR",
                 f"Falha ao enviar lance | Item {numero_item} | Erro: {exc}",
@@ -548,8 +551,11 @@ class BrowserBot:
             if not sub:
                 return None
             texto = sub.inner_text().strip()
-            # Remove R$, pontos de milhar, converte vírgula
-            texto = texto.replace("R$", "").replace(".", "").replace(",", ".").strip()
+            texto = texto.replace("R$", "").strip()
+            if "," in texto and "." in texto:
+                texto = texto.replace(".", "").replace(",", ".")
+            elif "," in texto:
+                texto = texto.replace(",", ".")
             return float(texto) if texto else None
         except Exception:
             return None

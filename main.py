@@ -40,9 +40,22 @@ from supabase_client import (
     testar_conexao,
     EntradaLog,
 )
-from edital_parser import EditalParser, ItemEdital, ResultadoEdital
+from edital_parser import (
+    EditalParser,
+    ItemEdital,
+    ResultadoEdital,
+    InteligenciaComprasGov,
+    SeveridadeRisco,
+)
 from engine import MotorDecisao, RegraItem
 from browser_bot import BrowserBot
+from license_manager import (
+    validar_licenca,
+    salvar_chave_local,
+    obter_chave_salva,
+    obter_hwid,
+    StatusLicenca,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Configuração de logging
@@ -81,7 +94,17 @@ def exibir_banner() -> None:
         f"  Modo de Operação: [bold {cor}]{modo}[/bold {cor}]"
         + (" ⚠️  LANCES REAIS SERÃO ENVIADOS!" if settings.is_real else " 🛡️  Seguro")
     )
-    console.print(f"  Margem Mínima: [bold]{settings.margem_minima_percent}%[/bold]\n")
+    console.print(f"  Margem Mínima: [bold]{settings.margem_minima_percent}%[/bold]")
+
+    try:
+        res_lic = validar_licenca()
+        if res_lic.valida:
+            dias = f" ({res_lic.dias_restantes} dias restantes)" if res_lic.dias_restantes is not None else ""
+            console.print(f"  Licença: [bold green]Ativa ✅[/bold green] – [cyan]{res_lic.cliente_nome or 'Cliente'}[/cyan]{dias}\n")
+        else:
+            console.print(f"  Licença: [bold yellow]⚠️  {res_lic.mensagem}[/bold yellow]\n")
+    except Exception:
+        console.print()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -129,9 +152,45 @@ def menu_carregar_edital() -> Optional[tuple[ResultadoEdital, list[RegraItem]]]:
             console.print(f"[red]❌ Erro ao consultar PNCP: {exc}[/red]")
             return None
 
-    console.print(f"\n  📖 Lendo edital: {caminho.name}...")
-    parser = EditalParser()
-    resultado = parser.parsear(caminho)
+    if caminho is not None:
+        console.print(f"\n  📖 Lendo edital: {caminho.name}...")
+        parser = EditalParser()
+        resultado = parser.parsear(caminho)
+    else:
+        # Monta o resultado a partir dos dados retornados pela API do PNCP
+        num_compra = compra.get("numeroCompra", "") if "compra" in locals() else ""
+        ano_compra = compra.get("anoCompra", "") if "compra" in locals() else ""
+        num_pregao = f"{num_compra}/{ano_compra}" if num_compra and ano_compra else ""
+        orgao_nome = compra.get("orgaoEntidade", {}).get("razaoSocial", "") if "compra" in locals() else ""
+        objeto_desc = compra.get("objeto", "") if "compra" in locals() else ""
+        uasg_cod = str(compra.get("unidadeOrgao", {}).get("codigoUnidade", "")) if "compra" in locals() else ""
+        
+        lista_itens: list[ItemEdital] = []
+        if "itens_pncp" in locals() and itens_pncp:
+            for idx, it in enumerate(itens_pncp, 1):
+                num_it = int(it.get("numeroItem", idx))
+                desc_it = str(it.get("descricao", f"Item {num_it}"))
+                qtd_it = float(it.get("quantidade", 1.0))
+                un_it = str(it.get("unidadeMedida", "UN")).upper()
+                v_ref = it.get("valorUnitarioEstimado") or it.get("valorTotal")
+                val_ref = float(v_ref) if v_ref else None
+                lista_itens.append(ItemEdital(
+                    numero_item=num_it,
+                    descricao=desc_it,
+                    unidade_medida=un_it,
+                    quantidade=qtd_it,
+                    valor_referencia=val_ref,
+                ))
+        
+        resultado = ResultadoEdital(
+            caminho_pdf="PNCP_API",
+            numero_pregao=num_pregao,
+            numero_uasg=uasg_cod,
+            orgao=orgao_nome,
+            objeto=objeto_desc,
+            itens=lista_itens,
+            sucesso=len(lista_itens) > 0,
+        )
 
     if not resultado.itens:
         console.print(
@@ -140,12 +199,46 @@ def menu_carregar_edital() -> Optional[tuple[ResultadoEdital, list[RegraItem]]]:
         if not Confirm.ask("  Deseja inserir itens manualmente?", default=True):
             return None
 
-    # Exibe resumo do edital
-    console.print(f"\n  [bold]Pregão:[/bold] {resultado.numero_pregao or 'N/D'}")
-    console.print(f"  [bold]UASG:[/bold] {resultado.numero_uasg or 'N/D'}")
-    console.print(f"  [bold]Objeto:[/bold] {resultado.objeto[:100] or 'N/D'}...")
-    console.print(f"  [bold]Modo de Disputa:[/bold] {resultado.regras.modo_disputa}")
-    console.print(f"  [bold]Itens identificados:[/bold] {len(resultado.itens)}")
+    # Exibe resumo e inteligência regulatória Compras.gov.br
+    intel = getattr(resultado, "inteligencia_compras_gov", None) or InteligenciaComprasGov()
+
+    table_intel = Table(title="🏛️ Inteligência Operacional Compras.gov.br (Lei 14.133 / IN 73)", border_style="cyan")
+    table_intel.add_column("Dimensão Regulamentar", style="bold white", width=26)
+    table_intel.add_column("Configuração Identificada", style="yellow")
+    table_intel.add_column("Impacto Operacional no Robô", style="dim")
+
+    table_intel.add_row("🎯 Critério de Julgamento", intel.criterio_julgamento_legivel, "Determina disputa por item, lote ou desconto.")
+    table_intel.add_row("⚡ Modo de Disputa", intel.modo_disputa.nome_legivel, intel.modo_disputa.descricao_operacional)
+    table_intel.add_row("📉 Degrau Mínimo (Lances)", intel.intervalo_lances.descricao, "Intervalo obrigatório e anti-flood (3s).")
+
+    cron_str = f"{intel.cronograma.data_abertura or 'Data no Edital'} às {intel.cronograma.hora_abertura or '09:00'} ({intel.cronograma.fuso_horario})"
+    table_intel.add_row("⏰ Cronograma Oficial", cron_str, f"Prazo de proposta readequada: mín. {intel.cronograma.prazo_envio_proposta_ajustada_horas}h.")
+
+    console.print()
+    console.print(table_intel)
+
+    # Tabela de Riscos de Desclassificação
+    if intel.riscos_identificados:
+        table_riscos = Table(title="🛡️ Matriz de Riscos de Desclassificação & Conformidade", border_style="red")
+        table_riscos.add_column("Severidade", justify="center", width=12)
+        table_riscos.add_column("Risco / Alerta", style="bold")
+        table_riscos.add_column("Base Legal", style="cyan", width=24)
+        table_riscos.add_column("Diretriz de Mitigação do Robô", style="green")
+
+        for r in intel.riscos_identificados:
+            if r.severidade == SeveridadeRisco.ALTO:
+                sev_styled = "[bold white on red] CRÍTICO [/bold white on red]"
+            elif r.severidade == SeveridadeRisco.MEDIO:
+                sev_styled = "[bold black on yellow] ATENÇÃO [/bold black on yellow]"
+            elif r.severidade == SeveridadeRisco.BAIXO:
+                sev_styled = "[bold white on green] BAIXO [/bold white on green]"
+            else:
+                sev_styled = "[bold white on blue] INFO [/bold white on blue]"
+
+            table_riscos.add_row(sev_styled, f"{r.titulo}\n[dim]{r.descricao}[/dim]", r.base_legal, r.sugestao_mitigacao)
+
+        console.print()
+        console.print(table_riscos)
 
     if resultado.erros_parsing:
         for erro in resultado.erros_parsing:
@@ -182,6 +275,10 @@ def menu_carregar_edital() -> Optional[tuple[ResultadoEdital, list[RegraItem]]]:
         if item.quantidade:
             console.print(
                 f"    Qtd: {item.quantidade} {item.unidade_medida}"
+            )
+        if item.valor_referencia:
+            console.print(
+                f"    Valor Ref./Teto: [green]R$ {item.valor_referencia:,.2f}[/green]"
             )
 
         custo = FloatPrompt.ask(
@@ -224,6 +321,7 @@ def menu_carregar_edital() -> Optional[tuple[ResultadoEdital, list[RegraItem]]]:
             preco_inicial_proposta=preco_inicial,
             decremento_minimo=item.decremento_minimo,
             decremento_percentual=item.decremento_percentual,
+            valor_referencia=item.valor_referencia,
         )
         regras.append(regra)
 
@@ -403,6 +501,43 @@ def menu_iniciar_monitoramento(regras: list[RegraItem]) -> None:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Opção 4: Gerenciar Licença e HWID
+# ─────────────────────────────────────────────────────────────────────────────
+
+def menu_gerenciar_licenca() -> None:
+    """Exibe o HWID e permite validar/ativar uma nova chave de licença."""
+    console.rule("[bold]🔑 Gerenciador de Licença & Assinatura[/bold]")
+    hwid = obter_hwid()
+    console.print(f"  [bold]Identificador da Máquina (HWID):[/bold] [cyan]{hwid}[/cyan]")
+    console.print("  [dim]Envie este identificador para o suporte se necessário.[/dim]\n")
+
+    res = validar_licenca()
+    if res.valida:
+        console.print(f"  Status: [bold green]LICENÇA ATIVA ✅[/bold green]")
+        console.print(f"  Cliente: [bold]{res.cliente_nome}[/bold]")
+        if res.cnpj_ou_cpf:
+            console.print(f"  CNPJ/CPF: {res.cnpj_ou_cpf}")
+        if res.valida_ate:
+            console.print(f"  Validade: {res.valida_ate.strftime('%d/%m/%Y')} ({res.dias_restantes} dias restantes)")
+        console.print(f"  Plano: {res.plano or 'Mensal'}")
+    else:
+        console.print(f"  Status: [bold red]INATIVA / EXPIRADA ❌[/bold red]")
+        console.print(f"  Mensagem: [yellow]{res.mensagem}[/yellow]")
+
+    console.print()
+    if Confirm.ask("  Deseja ativar uma nova chave de licença?", default=not res.valida):
+        chave = Prompt.ask("  Digite ou cole a chave de ativação (Ex: JRBC-XXXX-XXXX-XXXX)")
+        if chave.strip():
+            console.print("  ⏳ Validando com o servidor Supabase...")
+            nova_res = validar_licenca(chave.strip())
+            if nova_res.valida:
+                salvar_chave_local(chave.strip())
+                console.print(f"  [bold green]✅ Licença ativada com sucesso para {nova_res.cliente_nome}![/bold green]")
+            else:
+                console.print(f"  [bold red]❌ Falha na ativação: {nova_res.mensagem}[/bold red]")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Menu Principal
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -423,9 +558,10 @@ def menu_principal() -> None:
         console.print("  [1] 📄 Carregar Edital e Declarar Custos")
         console.print("  [2] 🔌 Testar Conexão com Supabase")
         console.print("  [3] 🚀 Iniciar Monitoramento de Sessão")
+        console.print("  [4] 🔑 Gerenciar Licença & HWID")
         console.print("  [0] 🚪 Sair\n")
 
-        opcao = Prompt.ask("  Escolha uma opção", choices=["0", "1", "2", "3"])
+        opcao = Prompt.ask("  Escolha uma opção", choices=["0", "1", "2", "3", "4"])
 
         console.print()
 
@@ -442,6 +578,9 @@ def menu_principal() -> None:
 
         elif opcao == "3":
             menu_iniciar_monitoramento(regras_carregadas)
+
+        elif opcao == "4":
+            menu_gerenciar_licenca()
 
         elif opcao == "0":
             console.print("  [dim]Encerrando... Até logo! 👋[/dim]\n")

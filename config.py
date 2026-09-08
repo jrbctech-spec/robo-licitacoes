@@ -6,13 +6,15 @@ Garante tipagem forte e valores padrão seguros.
 """
 from __future__ import annotations
 
-import os
 from enum import Enum
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
+from dotenv import load_dotenv
 from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 
 class ModoOperacao(str, Enum):
@@ -74,10 +76,23 @@ class Settings(BaseSettings):
     modo_operacao: ModoOperacao = Field(
         default=ModoOperacao.SIMULATION,
         description=(
-            "Modo de operação: 'simulation' (padrão seguro) ou 'real'. "
-            "No modo simulation nenhum lance real é enviado."
+            "Modo de operação: 'simulation'/'simulacao' (padrão seguro) ou 'real'/'producao'. "
+            "No modo simulation/simulacao nenhum lance real é enviado."
         ),
     )
+
+    @field_validator("modo_operacao", mode="before")
+    @classmethod
+    def validar_modo_operacao(cls, v: Any) -> ModoOperacao:
+        if isinstance(v, ModoOperacao):
+            return v
+        if isinstance(v, str):
+            v_norm = v.strip().lower()
+            if v_norm in ("simulation", "simulacao", "simulação", "simulado", "teste", "dry_run", "dry-run"):
+                return ModoOperacao.SIMULATION
+            if v_norm in ("real", "producao", "produção", "live"):
+                return ModoOperacao.REAL
+        return ModoOperacao(v)
 
     # ── Regras financeiras ────────────────────────────────────────────────────
     margem_minima_percent: float = Field(

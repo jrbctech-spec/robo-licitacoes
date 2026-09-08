@@ -24,13 +24,16 @@ from pathlib import Path
 
 NOME_EXE = "robo_licitacoes"
 SCRIPT_ENTRADA = "main.py"
-ICONE = "icon.ico"  # Opcional – crie/adicione um .ico na raiz do projeto
+ICONE = "assets/icon.ico" if Path("assets/icon.ico").exists() else "icon.ico"
 
 # Arquivos de dados a incluir no executável
 # Formato: ("origem", "destino_dentro_do_exe")
 DADOS = [
-    (".env.example", "."),      # Template de configuração
-    ("schema.sql", "."),        # Para referência
+    (".env.example", "."),
+    ("schema.sql", "."),
+    ("migration.sql", "."),
+    ("assets", "assets"),
+    ("installer.iss", "."),
 ]
 
 # Módulos ocultos que o PyInstaller pode não detectar automaticamente
@@ -49,11 +52,23 @@ HIDDEN_IMPORTS = [
     "colorama",
     "rich",
     "dotenv",
+    "customtkinter",
+    "PIL",
+    "google.genai",
+    "license_manager",
+    "diagnostics",
+    "edital_parser",
+    "proposta_parser",
+    "pncp_client",
+    "drive_scanner",
+    "browser_bot",
+    "engine",
 ]
 
-# Coletar todos os submódulos do playwright (necessário para o binário do browser)
+# Coletar todos os submódulos do playwright e customtkinter
 COLLECT_ALL = [
     "playwright",
+    "customtkinter",
 ]
 
 
@@ -150,7 +165,7 @@ def montar_argumentos_pyinstaller(onefile: bool) -> list[str]:
     # Exclui módulos desnecessários para reduzir tamanho
     exclusoes = [
         "matplotlib", "numpy", "pandas", "scipy",
-        "PIL", "tkinter", "PyQt5", "wx",
+        "PyQt5", "wx",
     ]
     for exc in exclusoes:
         args.extend(["--exclude-module", exc])
@@ -226,6 +241,41 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def compilar_inno_setup() -> None:
+    """Verifica se o compilador do Inno Setup está presente e gera o instalador .exe."""
+    iss_file = Path("installer.iss")
+    if not iss_file.exists():
+        return
+
+    # Procura pelo compilador ISCC no sistema ou Windows padrão
+    iscc_bin = shutil.which("iscc") or shutil.which("ISCC")
+    if not iscc_bin and platform.system() == "Windows":
+        candidatos = [
+            Path("C:/Program Files (x86)/Inno Setup 6/ISCC.exe"),
+            Path("C:/Program Files/Inno Setup 6/ISCC.exe"),
+            Path("C:/Program Files (x86)/Inno Setup 5/ISCC.exe"),
+            Path("C:/Program Files/Inno Setup 5/ISCC.exe"),
+        ]
+        for c in candidatos:
+            if c.exists():
+                iscc_bin = str(c)
+                break
+
+    if iscc_bin:
+        print("\n⚙️  Compilando instalador único com Inno Setup...")
+        res = subprocess.run([iscc_bin, str(iss_file)])
+        if res.returncode == 0:
+            out_exe = Path("dist_installer/Instalador_Robo_Licitacoes.exe")
+            print(f"\n🎉 INSTALADOR CRIADO COM SUCESSO!")
+            print(f"   📍 Arquivo: {out_exe.resolve() if out_exe.exists() else 'dist_installer/'}")
+        else:
+            print("⚠️ Falha na compilação do instalador Inno Setup.")
+    else:
+        print("\n💡 DICA PARA GERAR O INSTALADOR .EXE ÚNICO:")
+        print("   1. Abra o arquivo 'installer.iss' no software Inno Setup Compiler.")
+        print("   2. Pressione Ctrl+F9 (Compile) para gerar 'Instalador_Robo_Licitacoes.exe'.")
+
+
 def main() -> None:
     print("=" * 60)
     print(f"  🏗️  Build Script – {NOME_EXE}")
@@ -247,6 +297,8 @@ def main() -> None:
 
     if sucesso:
         exibir_resultado_build(onefile=args.onefile)
+        if not args.onefile:
+            compilar_inno_setup()
         sys.exit(0)
     else:
         print("\n❌ Build falhou. Verifique os logs acima.")

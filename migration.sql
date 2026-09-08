@@ -128,6 +128,22 @@ CREATE TABLE IF NOT EXISTS oportunidades_salvas (
     salvo_em                TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Tabela: licencas (Controle de Mensalidades e Ativações)
+CREATE TABLE IF NOT EXISTS licencas (
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chave_licenca       TEXT UNIQUE NOT NULL,
+    cliente_nome        TEXT NOT NULL,
+    cnpj_ou_cpf         TEXT,
+    hwid                TEXT,
+    status              TEXT NOT NULL DEFAULT 'ativa',
+    valida_ate          TIMESTAMPTZ NOT NULL,
+    plano               TEXT NOT NULL DEFAULT 'mensal',
+    limite_maquinas     INTEGER NOT NULL DEFAULT 1,
+    observacoes         TEXT,
+    criado_em           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    atualizado_em       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- -------------------------------------------------------------
 -- 3. ALTERAÇÕES INCREMENTAIS DE COLUNAS (ADD COLUMN IF NOT EXISTS)
 -- -------------------------------------------------------------
@@ -227,6 +243,7 @@ ALTER TABLE itens_licitacao ENABLE ROW LEVEL SECURITY;
 ALTER TABLE historico_lances ENABLE ROW LEVEL SECURITY;
 ALTER TABLE logs_sessao ENABLE ROW LEVEL SECURITY;
 ALTER TABLE oportunidades_salvas ENABLE ROW LEVEL SECURITY;
+ALTER TABLE licencas ENABLE ROW LEVEL SECURITY;
 
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow_all_licitacoes') THEN
@@ -247,6 +264,10 @@ DO $$ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow_all_oportunidades_salvas') THEN
         CREATE POLICY "Allow_all_oportunidades_salvas" ON oportunidades_salvas FOR ALL USING (true) WITH CHECK (true);
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM pg_policies WHERE policyname = 'Allow_all_licencas') THEN
+        CREATE POLICY "Allow_all_licencas" ON licencas FOR ALL USING (true) WITH CHECK (true);
     END IF;
 END $$;
 

@@ -1,5 +1,8 @@
 # Variáveis de ambiente e segredos
 .env
+.license
+.license_cache
+*.license
 credentials.json
 token.json
 *.pem
