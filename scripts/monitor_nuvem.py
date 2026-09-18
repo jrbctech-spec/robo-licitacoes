@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 scripts/monitor_nuvem.py
-Monitor autônomo 24h para o PNCP (Tocantins e Goiás) com alertas no Telegram.
+Monitor autônomo 24h para o PNCP (Tocantins e Goiás) com alertas executivos no Telegram.
 JRBC TECH - CNPJ: 65.488.003/0001-61
 """
 
@@ -60,7 +60,7 @@ def salvar_historico_notificados(notificados: set):
     try:
         with open(CACHE_FILE, "w", encoding="utf-8") as f:
             json.dump({"notificados": list(notificados), "ultima_atualizacao": datetime.now().isoformat()}, f, indent=2)
-        logger.info(f"Histórico atualizado com {len(notificados)} certames registrados.")
+        logger.info(f"Histórico atualizado com {len(notificados)} certames.")
     except Exception as e:
         logger.error(f"Falha ao salvar histórico: {e}")
 
@@ -69,9 +69,21 @@ def classificar_tipo_e_margem(objeto: str) -> dict:
     objeto_lower = objeto.lower()
     eh_servico = any(palavra in objeto_lower for palavra in PALAVRAS_SERVICOS)
     if eh_servico:
-        return {"tipo": "SERVIÇO", "margem_percentual": 50.0, "fator_piso": 0.50}
+        return {
+            "tipo": "SERVIÇO",
+            "icone": "🛠",
+            "margem_percentual": 50.0,
+            "fator_piso": 0.50,
+            "tag": "#SERVICO"
+        }
     else:
-        return {"tipo": "PRODUTO", "margem_percentual": 30.0, "fator_piso": 0.70}
+        return {
+            "tipo": "PRODUTO",
+            "icone": "📦",
+            "margem_percentual": 30.0,
+            "fator_piso": 0.70,
+            "tag": "#PRODUTO"
+        }
 
 
 def consultar_pncp_uf(uf: str, data_referencia: datetime) -> list:
@@ -110,11 +122,11 @@ def enviar_alerta_telegram(certame: dict, precificacao: dict) -> bool:
     ano = certame.get("anoCompra", "")
     numero_processo = f"{numero}/{ano}" if numero and ano else "S/N"
     
-    objeto = certame.get("objetoCompra", "Sem descrição")
+    objeto = certame.get("objetoCompra", "Sem descrição informada")
     valor_total = certame.get("valorTotalEstimado") or 0.0
     piso_seguranca = valor_total * precificacao["fator_piso"] if valor_total > 0 else 0.0
     
-    data_abertura = certame.get("dataAberturaProposta") or certame.get("dataEncerramentoProposta") or "Ver edital"
+    data_abertura = certame.get("dataAberturaProposta") or certame.get("dataEncerramentoProposta") or "Consulte o edital"
     if "T" in data_abertura:
         try:
             dt = datetime.fromisoformat(data_abertura.replace("Z", "+00:00"))
@@ -126,17 +138,24 @@ def enviar_alerta_telegram(certame: dict, precificacao: dict) -> bool:
     sequencial = certame.get("sequencialCompra", "")
     link_pncp = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}" if cnpj and ano and sequencial else "https://pncp.gov.br"
 
-    # Formatação limpa em HTML (imune a quebras por caracteres especiais)
+    tag_estado = f"#{'TOCANTINS' if uf == 'TO' else 'GOIAS' if uf == 'GO' else uf}"
+    tag_mod = "#DISPENSA" if "dispensa" in modalidade.lower() else "#PREGAO"
+
     texto = (
-        "🚨 <b>NOVA OPORTUNIDADE IDENTIFICADA — PNCP</b>\n\n"
-        f"🏛 <b>Órgão:</b> {orgao}\n"
-        f"📍 <b>Localidade:</b> {localidade} | <b>UASG:</b> {uasg}\n"
-        f"📋 <b>Modalidade:</b> {modalidade} nº {numero_processo}\n\n"
-        f"📝 <b>Objeto:</b>\n<i>{objeto[:320]}...</i>\n\n"
-        f"💰 <b>Valor Estimado:</b> R$ {valor_total:,.2f}\n"
-        f"🎯 <b>Margem Alvo:</b> {precificacao['margem_percentual']:.0f}% ({precificacao['tipo']})\n"
-        f"🛡 <b>Piso de Segurança (Mínimo):</b> R$ {piso_seguranca:,.2f}\n\n"
-        f"📅 <b>Data da Sessão:</b> {data_abertura}\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏛  <b>{orgao.upper()}</b>\n"
+        f"📍  {localidade} | <b>UASG:</b> {uasg}\n"
+        f"📋  <b>{modalidade} nº {numero_processo}</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📝 <b>OBJETO DA CONTRATAÇÃO:</b>\n"
+        f"<i>{objeto[:350]}...</i>\n\n"
+        "💰 <b>ANÁLISE DE MARGEM (JRBC TECH):</b>\n"
+        f"• <b>Valor Estimado Edital:</b> R$ {valor_total:,.2f}\n"
+        f"• <b>Classificação:</b> {precificacao['icone']} {precificacao['tipo']}\n"
+        f"• <b>Margem Alvo Líquida:</b> {precificacao['margem_percentual']:.0f}%\n"
+        f"• <b>Piso de Lance Seguro:</b> R$ {piso_seguranca:,.2f}\n\n"
+        f"📅 <b>ABERTURA DA SESSÃO:</b>\n{data_abertura}\n\n"
+        f"🏷 {tag_estado} {tag_mod} #TI {precificacao['tag']}\n"
     )
 
     url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -145,7 +164,12 @@ def enviar_alerta_telegram(certame: dict, precificacao: dict) -> bool:
         "text": texto,
         "parse_mode": "HTML",
         "reply_markup": {
-            "inline_keyboard": [[{"text": "📄 Abrir Edital no PNCP", "url": link_pncp}]]
+            "inline_keyboard": [
+                [
+                    {"text": "📄 Abrir no PNCP", "url": link_pncp},
+                    {"text": "🏛 Portal Compras.gov", "url": "https://www.gov.br/compras"}
+                ]
+            ]
         }
     }
 
@@ -187,7 +211,7 @@ def main():
                     notificados.add(id_unico)
 
     salvar_historico_notificados(notificados)
-    logger.info(f"Concluído: {novos} encontrados, {alertas} alertas enviados ao Telegram.")
+    logger.info(f"Concluído: {novos} avaliados, {alertas} alertas enviados.")
 
 
 if __name__ == "__main__":
