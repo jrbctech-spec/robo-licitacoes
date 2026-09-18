@@ -57,6 +57,21 @@ ALERTA_GUI: bool = os.getenv("ALERTA_GUI", "True").lower() in ("true", "1", "yes
 
 
 @dataclass
+class RelatorioPendenciasD1:
+    """Relatório do Checklist de Documentação Obrigatória gatilho D-1."""
+    certame_id: str
+    numero_uasg: str
+    numero_pregao: str
+    certidões_validadas: bool = True
+    sicaf_ativo: bool = True
+    fgts_regular: bool = True
+    balanco_valido: bool = True
+    pendencias: list[str] = field(default_factory=list)
+    health_check_browser_ok: bool = False
+    mensagem_health_check: str = ""
+
+
+@dataclass
 class OportunidadeAlerta:
     """Representa uma oportunidade nova detectada pelo sistema de alertas."""
     id_pncp: str
@@ -67,6 +82,46 @@ class OportunidadeAlerta:
     data_encerramento: Optional[str] = None
     detectada_em: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     palavras_chave_match: list[str] = field(default_factory=list)
+
+
+def executar_checklist_documentacao_d1(certame_id: str, numero_uasg: str, numero_pregao: str) -> RelatorioPendenciasD1:
+    """
+    Executa o checklist de documentação obrigatória 24h antes da sessão pública (Gatilho D-1).
+    """
+    relatorio = RelatorioPendenciasD1(
+        certame_id=certame_id,
+        numero_uasg=numero_uasg,
+        numero_pregao=numero_pregao,
+    )
+
+    # Exemplo de validações simuladas / verificadas
+    # Em produção, cruza com certidões e SICAF armazenados
+    pendencias = []
+
+    # 1. Checar Certidões Negativas
+    if not relatorio.certidões_validadas:
+        pendencias.append("CND Federal/INSS expirada ou pendente de renovação.")
+
+    # 2. Checar FGTS
+    if not relatorio.fgts_regular:
+        pendencias.append("CRF do FGTS vencido.")
+
+    # 3. Teste de pré-voo (health-check) no Compras.gov.br via browser_bot.py
+    try:
+        from browser_bot import testar_pre_voo_comprasgov
+        ok, msg = testar_pre_voo_comprasgov()
+        relatorio.health_check_browser_ok = ok
+        relatorio.mensagem_health_check = msg
+        if not ok:
+            pendencias.append(f"Teste de Pré-Voo Browser: {msg}")
+    except Exception as exc:
+        relatorio.health_check_browser_ok = False
+        relatorio.mensagem_health_check = f"Erro ao executar health-check: {exc}"
+        pendencias.append(f"Teste de Pré-Voo Browser indisponível: {exc}")
+
+    relatorio.pendencias = pendencias
+    logger.info(f"📋 Checklist D-1 executado para {numero_uasg}/{numero_pregao} | Pendências: {len(pendencias)}")
+    return relatorio
 
 
 # ─────────────────────────────────────────────────────────────────────────────

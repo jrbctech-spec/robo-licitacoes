@@ -26,10 +26,78 @@ logger = logging.getLogger(__name__)
 # Enums e modelos de dados
 # ─────────────────────────────────────────────────────────────────────────────
 
+from pydantic import BaseModel, Field, model_validator
+
+
 class TipoIntervalo(str, Enum):
     """Tipo de intervalo mínimo entre lances."""
     MONETARIO = "monetario"       # Valor fixo em Reais (ex: R$ 0,01 ou R$ 0,10)
     PERCENTUAL = "percentual"     # Percentual sobre o menor lance (ex: 0,5% ou 1,0%)
+
+
+class TipoItemEnum(str, Enum):
+    """Tipo de item para aplicação de margens de lucro JRBC TECH."""
+    PRODUTO = "PRODUTO"   # Hardware, equipamentos, suprimentos (Lucro Mínimo 30%)
+    SERVICO = "SERVICO"   # Suporte técnico, implantação, infraestrutura, horas técnicas (Lucro Mínimo 50%)
+
+
+class PrecificacaoItem(BaseModel):
+    """
+    Motor de Precificação e Margens da JRBC TECH.
+    Calcula automaticamente:
+      - Custo Total de Aquisição / Operação
+      - Margem Líquida Mínima Obrigatória (30% Produtos / 50% Serviços)
+      - Piso de Segurança (Stop-loss / Lance Mínimo de Desistência)
+      - Preço de Abertura (Teto do Edital)
+      - Margem Alvo e Preço Alvo
+    """
+    tipo_item: TipoItemEnum = TipoItemEnum.PRODUTO
+    custo_base: float = Field(gt=0, description="Custo base de aquisição ou despesa operacional")
+    impostos_percentual: float = Field(default=0.0, ge=0, description="% de impostos e tributos")
+    despesas_operacionais: float = Field(default=0.0, ge=0, description="Outras despesas operacionais em R$")
+    margem_alvo_percentual: Optional[float] = Field(default=None, ge=0, description="Margem desejada (se maior que a mínima)")
+    valor_referencia_edital: Optional[float] = Field(default=None, ge=0, description="Teto do edital / valor de referência")
+
+    # Propriedades Calculadas
+    custo_total: float = 0.0
+    margem_liquida_minima_percentual: float = 0.0
+    piso_seguranca: float = 0.0      # Stop-Loss / Lance Mínimo de Desistência
+    preco_abertura: float = 0.0      # Teto do Edital / Preço de Referência
+    margem_alvo: float = 0.0         # Margem % aplicada
+    preco_alvo: float = 0.0          # Preço estimado com margem alvo
+
+    @model_validator(mode="after")
+    def calcular_precificacao(self) -> PrecificacaoItem:
+        # 1. Custo total acumulando impostos e despesas adicionais
+        custo_com_impostos = self.custo_base * (1.0 + (self.impostos_percentual / 100.0))
+        self.custo_total = round(custo_com_impostos + self.despesas_operacionais, 2)
+
+        # 2. Regra de margem líquida obrigatória JRBC TECH
+        if self.tipo_item == TipoItemEnum.SERVICO:
+            margem_regra = 50.0
+        else:
+            margem_regra = 30.0
+
+        if self.margem_alvo_percentual is not None and self.margem_alvo_percentual > margem_regra:
+            self.margem_liquida_minima_percentual = self.margem_alvo_percentual
+        else:
+            self.margem_liquida_minima_percentual = margem_regra
+
+        # 3. Piso de Segurança = Custo Total + Margem Mínima
+        piso = self.custo_total * (1.0 + (self.margem_liquida_minima_percentual / 100.0))
+        self.piso_seguranca = float(Decimal(str(piso)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+        # 4. Preço de Abertura = Teto do Edital
+        if self.valor_referencia_edital and self.valor_referencia_edital > 0:
+            self.preco_abertura = round(self.valor_referencia_edital, 2)
+        else:
+            self.preco_abertura = round(self.piso_seguranca * 1.25, 2)
+
+        # 5. Preço Alvo
+        self.margem_alvo = self.margem_liquida_minima_percentual
+        self.preco_alvo = round(self.custo_total * (1.0 + (self.margem_alvo / 100.0)), 2)
+
+        return self
 
 
 class EstadoItemEnum(str, Enum):

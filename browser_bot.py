@@ -570,3 +570,33 @@ class BrowserBot:
             return sub.inner_text().strip() if sub else ""
         except Exception:
             return ""
+
+
+def testar_pre_voo_comprasgov(timeout_ms: int = 10000) -> tuple[bool, str]:
+    """
+    Executa teste de pré-voo (health-check) no Compras.gov.br verificando conectividade.
+    """
+    url_test = "https://www.compras.gov.br"
+    logger.info("🛫 Executando teste de pré-voo (health-check) no Compras.gov.br...")
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            page = browser.new_page()
+            response = page.goto(url_test, timeout=timeout_ms)
+            browser.close()
+
+            if response and response.status in (200, 302):
+                msg = f"Health-check OK: Compras.gov.br acessível (Status {response.status})."
+                logger.info(f"✅ {msg}")
+                return True, msg
+            else:
+                status_code = response.status if response else "Sem resposta"
+                msg = f"Falha no health-check: Compras.gov.br retornou status {status_code}."
+                logger.warning(f"⚠️ {msg}")
+                return False, msg
+
+    except Exception as exc:
+        msg = f"Falha de conexão / browser no health-check Compras.gov.br: {exc}"
+        logger.warning(f"⚠️ {msg}")
+        return False, msg
