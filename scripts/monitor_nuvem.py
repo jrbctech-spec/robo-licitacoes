@@ -126,25 +126,26 @@ def enviar_alerta_telegram(certame: dict, precificacao: dict) -> bool:
     sequencial = certame.get("sequencialCompra", "")
     link_pncp = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}" if cnpj and ano and sequencial else "https://pncp.gov.br"
 
+    # Formatação limpa em HTML (imune a quebras por caracteres especiais)
     texto = (
-        "🚨 *NOVA OPORTUNIDADE IDENTIFICADA — PNCP*\n\n"
-        f"🏛 *Órgão:* {orgao}\n"
-        f"📍 *Localidade:* {localidade} | *UASG:* {uasg}\n"
-        f"📋 *Modalidade:* {modalidade} nº {numero_processo}\n\n"
-        f"📝 *Objeto:*\n_{objeto[:300]}..._\n\n"
-        f"💰 *Valor Estimado:* R$ {valor_total:,.2f}\n"
-        f"🎯 *Margem Alvo:* {precificacao['margem_percentual']:.0f}% ({precificacao['tipo']})\n"
-        f"🛡 *Piso de Segurança (Mínimo):* R$ {piso_seguranca:,.2f}\n\n"
-        f"📅 *Abertura:* {data_abertura}\n"
+        "🚨 <b>NOVA OPORTUNIDADE IDENTIFICADA — PNCP</b>\n\n"
+        f"🏛 <b>Órgão:</b> {orgao}\n"
+        f"📍 <b>Localidade:</b> {localidade} | <b>UASG:</b> {uasg}\n"
+        f"📋 <b>Modalidade:</b> {modalidade} nº {numero_processo}\n\n"
+        f"📝 <b>Objeto:</b>\n<i>{objeto[:320]}...</i>\n\n"
+        f"💰 <b>Valor Estimado:</b> R$ {valor_total:,.2f}\n"
+        f"🎯 <b>Margem Alvo:</b> {precificacao['margem_percentual']:.0f}% ({precificacao['tipo']})\n"
+        f"🛡 <b>Piso de Segurança (Mínimo):</b> R$ {piso_seguranca:,.2f}\n\n"
+        f"📅 <b>Data da Sessão:</b> {data_abertura}\n"
     )
 
     url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
         "text": texto,
-        "parse_mode": "Markdown",
+        "parse_mode": "HTML",
         "reply_markup": {
-            "inline_keyboard": [[{"text": "📄 Ver Edital no PNCP", "url": link_pncp}]]
+            "inline_keyboard": [[{"text": "📄 Abrir Edital no PNCP", "url": link_pncp}]]
         }
     }
 
