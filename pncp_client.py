@@ -15,11 +15,71 @@ import logging
 import re
 import uuid
 from pathlib import Path
+from enum import Enum
 from typing import Any, Optional
+from pydantic import BaseModel, Field
 
 import httpx
 
 from supabase_client import inserir_item, inserir_licitacao
+
+
+class ModalidadePNCPEnum(str, Enum):
+    """
+    Modalidades de licitação e contratação segundo a Lei 14.133/2021.
+    """
+    DISPENSA_ELETRONICA = "Dispensa Eletrônica (Lei 14.133/21, Art. 75)"
+    PREGAO_ELETRONICO = "Pregão Eletrônico"
+    CONTRATACAO_DIRETA = "Contratação Direta"
+    CONCORRENCIA_ELETRONICA = "Concorrência Eletrônica"
+    OUTROS = "Outras Modalidades"
+
+
+class ItemCertamePNCP(BaseModel):
+    """Item individual extraído da API do PNCP."""
+    numero_item: int
+    descricao: str
+    quantidade: float = 1.0
+    unidade_medida: str = "UN"
+    valor_referencia: Optional[float] = None
+    tipo_item: str = "PRODUTO"  # PRODUTO ou SERVICO
+
+
+class CertameMinadoPNCP(BaseModel):
+    """Dados completos e classificados de um certame minerado no PNCP."""
+    cnpj_orgao: str
+    ano: str
+    sequencial: str
+    numero_uasg: str
+    numero_pregao: str
+    orgao_nome: str
+    objeto: str
+    modalidade: ModalidadePNCPEnum = ModalidadePNCPEnum.PREGAO_ELETRONICO
+    modo_disputa: str = "aberto"
+    data_hora_sessao: Optional[str] = None
+    url_certame: str = ""
+    itens: list[ItemCertamePNCP] = Field(default_factory=list)
+    arquivos_baixados: list[str] = Field(default_factory=list)
+    pasta_certame: str = ""
+
+
+def identificar_modalidade_pncp(dados_compra: dict[str, Any]) -> ModalidadePNCPEnum:
+    """
+    Identifica com precisão a modalidade exata conforme os metadados do PNCP e Lei 14.133/2021.
+    """
+    cod_modalidade = dados_compra.get("modalidadeId") or dados_compra.get("codigoModalidadeContratacao")
+    nome_modalidade = str(dados_compra.get("modalidadeNome") or dados_compra.get("modalidadeContratacaoNome") or "").lower()
+
+    if cod_modalidade == 8 or "dispensa" in nome_modalidade or "art. 75" in nome_modalidade or "artigo 75" in nome_modalidade:
+        return ModalidadePNCPEnum.DISPENSA_ELETRONICA
+    elif cod_modalidade == 6 or "pregã" in nome_modalidade or "pregao" in nome_modalidade:
+        return ModalidadePNCPEnum.PREGAO_ELETRONICO
+    elif cod_modalidade in (9, 10) or "inexigib" in nome_modalidade or "direta" in nome_modalidade:
+        return ModalidadePNCPEnum.CONTRATACAO_DIRETA
+    elif cod_modalidade == 4 or "concorr" in nome_modalidade:
+        return ModalidadePNCPEnum.CONCORRENCIA_ELETRONICA
+
+    return ModalidadePNCPEnum.OUTROS
 
 logger = logging.getLogger(__name__)
 
@@ -347,6 +407,75 @@ def baixar_anexos_edital_pncp(
     Baixa automaticamente os PDFs anexados ao processo no PNCP para a pasta downloads_editais/.
     """
     return obter_arquivos_edital(cnpj_orgao, ano, sequencial, pasta_destino=pasta_destino)
+
+
+def minar_e_estruturar_certame(
+    url_ou_texto: str,
+    base_dir: str | Path = "processos_pncp",
+) -> CertameMinadoPNCP:
+    """
+    Mineração e classificação completa de um certame no PNCP:
+    1. Identifica parâmetros (CNPJ/Ano/Sequencial)
+    2. Identifica modalidade exata (Dispensa Eletrônica, Pregão, etc)
+    3. Cria a estrutura de pastas organizada (UASG_MODALIDADE_NUMERO)
+    4. Realiza o download automático de todos os arquivos oficiais (Edital, TR, Apêndices, Propostas)
+    5. Extrai itens, quantidades, valores de referência e data/hora da sessão pública.
+    """
+    cnpj_orgao, ano, sequencial = extrair_params_pncp(url_ou_texto)
+    compra = buscar_compra(cnpj_orgao, ano, sequencial)
+    itens_raw = obter_itens_compra(cnpj_orgao, ano, sequencial)
+
+    modalidade = identificar_modalidade_pncp(compra)
+    orgao_nome = compra.get("orgaoEntidade", {}).get("razaoSocial", f"Órgão CNPJ {cnpj_orgao}")
+    objeto = compra.get("objeto", "Licitação via PNCP")
+    num_uasg = str(compra.get("unidadeOrgao", {}).get("codigoUnidade", cnpj_orgao[:6]))
+    num_pregao = f"{sequencial}_{ano}"
+
+    # Formatar nome da pasta de forma padronizada: UASG_MODALIDADE_NUMERO
+    mod_tag = "DISPENSA" if modalidade == ModalidadePNCPEnum.DISPENSA_ELETRONICA else "PREGAO"
+    nome_pasta = f"UASG_{num_uasg}_{mod_tag}_{num_pregao}"
+    pasta_destino = Path(base_dir) / nome_pasta
+    pasta_destino.mkdir(parents=True, exist_ok=True)
+
+    # Download de anexos oficiais
+    arquivos_baixados = obter_arquivos_edital(cnpj_orgao, ano, sequencial, pasta_destino=pasta_destino)
+
+    # Extração de itens
+    itens_certame: list[ItemCertamePNCP] = []
+    for raw in itens_raw:
+        num_i = int(raw.get("numeroItem", raw.get("item", 1)))
+        desc_i = str(raw.get("descricao", f"Item {num_i}"))
+        qtd_i = float(raw.get("quantidade", 1.0))
+        un_i = str(raw.get("unidadeMedida", "UN")).upper()
+        v_ref = raw.get("valorUnitarioEstimado") or raw.get("valorTotal")
+        val_ref = float(v_ref) if v_ref else None
+
+        itens_certame.append(ItemCertamePNCP(
+            numero_item=num_i,
+            descricao=desc_i,
+            quantidade=qtd_i,
+            unidade_medida=un_i,
+            valor_referencia=val_ref,
+        ))
+
+    data_sessao = compra.get("dataAberturaProposta") or compra.get("dataEncerramentoProposta")
+
+    return CertameMinadoPNCP(
+        cnpj_orgao=cnpj_orgao,
+        ano=ano,
+        sequencial=sequencial,
+        numero_uasg=num_uasg,
+        numero_pregao=f"{sequencial}/{ano}",
+        orgao_nome=orgao_nome,
+        objeto=objeto,
+        modalidade=modalidade,
+        modo_disputa=compra.get("modoDisputaNome", "aberto"),
+        data_hora_sessao=data_sessao,
+        url_certame=f"https://pncp.gov.br/app/editais/{cnpj_orgao}/{ano}/{sequencial}",
+        itens=itens_certame,
+        arquivos_baixados=arquivos_baixados,
+        pasta_certame=str(pasta_destino),
+    )
 
 
 # Alias retrocompatíveis

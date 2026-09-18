@@ -71,10 +71,18 @@ def sincronizar_resultado_supabase(resultado: ResultadoEdital) -> tuple[dict[str
     return lic_salva, itens_salvos
 
 
-def escanear_pasta_local(caminho_raiz: str | Path, sincronizar_supabase: bool = True) -> list[ResultadoEdital]:
+from drive_uploader import DriveUploader
+
+
+def escanear_pasta_local(
+    caminho_raiz: str | Path,
+    sincronizar_supabase: bool = True,
+    organizar_em_subpastas: bool = True,
+) -> list[ResultadoEdital]:
     """
     Percorre uma pasta local contendo subpastas de processos/UASGs.
-    Identifica editais PDF, parseia e sincroniza com o Supabase.
+    Identifica editais PDF, parseia, organiza em estrutura UASG_MODALIDADE_NUMERO
+    e sincroniza com o Supabase.
     """
     raiz = Path(caminho_raiz)
     if not raiz.exists() or not raiz.is_dir():
@@ -83,6 +91,7 @@ def escanear_pasta_local(caminho_raiz: str | Path, sincronizar_supabase: bool = 
 
     logger.info(f"🔍 Escaneando diretório local de processos: {raiz}")
     parser = EditalParser()
+    uploader = DriveUploader(base_dir=raiz) if organizar_em_subpastas else None
     resultados: list[ResultadoEdital] = []
 
     arquivos_pdf = list(raiz.glob("**/*.pdf")) + list(raiz.glob("**/*.PDF"))
@@ -94,6 +103,18 @@ def escanear_pasta_local(caminho_raiz: str | Path, sincronizar_supabase: bool = 
             res = parser.parsear(pdf_path)
             if res.itens or res.sucesso:
                 resultados.append(res)
+                if uploader and res.numero_uasg and res.numero_pregao:
+                    try:
+                        uploader.salvar_arquivo_certame(
+                            numero_uasg=res.numero_uasg,
+                            modalidade=res.regras.modo_disputa or "PREGAO",
+                            numero_pregao=res.numero_pregao,
+                            caminho_arquivo=pdf_path,
+                            subcategoria="editais_anexos",
+                        )
+                    except Exception as exc_org:
+                        logger.warning(f"Aviso ao organizar arquivo local: {exc_org}")
+
                 if sincronizar_supabase:
                     sincronizar_resultado_supabase(res)
         except Exception as exc:
