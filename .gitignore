@@ -50,3 +50,9 @@ logs/
 .tmp/
 browser_profile/
 .venv/
+
+.env
+*.log
+.tmp/
+browser_profile/
+.venv/
