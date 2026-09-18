@@ -1,0 +1,12 @@
+============================================================
+📊 RELATÓRIO DE LICITAÇÕES
+Gerado: 11/09/2026 07:19
+Total de licitações: 1
+
+🔹 PREGÃO
+   Licitações: 1
+   Total de itens: 2
+   Total participados: 1
+   Preço médio (custo): R$ 7200.00
+   Preço médio (proposta): R$ 9100.00
+   Média de superação: 100.0%

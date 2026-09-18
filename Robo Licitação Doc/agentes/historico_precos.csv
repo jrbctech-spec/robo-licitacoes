@@ -1,0 +1,6 @@
+data,codigo_catmat,descricao,preco_maximo_edital,custo_unitario,preco_proposto,quantidade,lucro,margem
+2026-09-11 07:19,376871,Servidor Rack/Torre 2U,10850,7900,9800,1,1900,0.19
+2026-09-11 07:19,448242,Switch POE 48 Portas,9200,6500,8400,1,1900,0.22
+2026-09-11 07:24,TEST001,Teste Item 1,200,100,150,1,50,0.15
+2026-09-11 07:24,TEST002,Teste Item 2,300,200,250,2,100,0.15
+2026-09-11 07:32,TEST001,Teste,700,500,600,1,100,0.16

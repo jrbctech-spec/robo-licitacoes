@@ -259,7 +259,10 @@ def validar_licenca(chave: Optional[str] = None) -> ResultadoValidacao:
             )
 
         # 3. Validação e Vinculação de Máquina (HWID)
-        if not hwid_banco:
+        limite_maquinas = int(reg.get("limite_maquinas") or 1)
+        hwids_cadastrados = [h.strip().upper() for h in str(hwid_banco or "").split(",") if h.strip()]
+
+        if not hwids_cadastrados:
             # Primeiro uso: vincula o computador do cliente
             try:
                 client.table("licencas").update({
@@ -269,11 +272,25 @@ def validar_licenca(chave: Optional[str] = None) -> ResultadoValidacao:
                 logger.info(f"✅ HWID {hwid_atual} vinculado com sucesso à chave {chave_final}.")
             except Exception as exc_hwid:
                 logger.warning(f"Aviso ao vincular HWID: {exc_hwid}")
-        elif hwid_banco != hwid_atual:
+        elif hwid_atual in hwids_cadastrados:
+            # Máquina já autorizada
+            pass
+        elif len(hwids_cadastrados) < limite_maquinas or chave_final.startswith("JRBC-MASTER-"):
+            # Permite cadastrar nova máquina até o limite (ou se for chave master dev)
+            try:
+                novos_hwids = ",".join(hwids_cadastrados + [hwid_atual])
+                client.table("licencas").update({
+                    "hwid": novos_hwids,
+                    "atualizado_em": agora.isoformat(),
+                }).eq("id", reg["id"]).execute()
+                logger.info(f"✅ HWID adicional {hwid_atual} vinculado com sucesso à chave {chave_final} ({len(hwids_cadastrados)+1}/{limite_maquinas}).")
+            except Exception as exc_hwid:
+                logger.warning(f"Aviso ao vincular HWID adicional: {exc_hwid}")
+        else:
             return ResultadoValidacao(
                 valida=False,
                 status=StatusLicenca.MAQUINA_NAO_AUTORIZADA,
-                mensagem="Esta chave já está ativada em outro computador. Para transferir de máquina, fale com o suporte.",
+                mensagem=f"Esta chave atingiu o limite de {limite_maquinas} computador(es) cadastrado(s). Para transferir ou liberar novas máquinas, fale com o suporte.",
                 cliente_nome=cliente_nome,
                 cnpj_ou_cpf=cnpj_cpf,
                 chave_licenca=chave_final,

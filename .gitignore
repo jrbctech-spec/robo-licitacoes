@@ -44,3 +44,9 @@ logs/
 *.swp
 *.swo
 .DS_Store
+
+.env
+*.log
+.tmp/
+browser_profile/
+.venv/

@@ -1,0 +1,72 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robo-licitacoes"
+version = "1.0.0"
+description = "Robô de Licitações para Compras.gov.br — Pregão Eletrônico com motor determinístico, parsing de editais via RegEx + Gemini AI, e automação Playwright."
+readme = "README.md"
+license = {text = "Proprietário - Uso Restrito"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Jakson Ribeiro da Costa", email = "jakson@example.com"}
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Environment :: X11 Applications :: GTK",
+    "Intended Audience :: Developers",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Office/Business :: Scheduling",
+]
+dependencies = [
+    "supabase>=1.0",
+    "httpx>=0.24",
+    "tenacity>=8.0",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "python-dotenv>=1.0",
+    "pypdf>=4.0",
+    "playwright>=1.40",
+    "google-generativeai>=0.3",
+    "customtkinter>=5.2.2",
+    "rich>=13.0",
+    "tkinterdnd2>=0.3",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pyinstaller>=6.0",
+]
+
+[project.scripts]
+robo-licitacoes = "main:main"
+
+[tool.setuptools.packages.find]
+include = ["*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.ico", "*.png", "*.html", "*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["test_*.py"]
+addopts = "--tb=short --strict-markers"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true

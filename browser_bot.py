@@ -32,7 +32,8 @@ from playwright.sync_api import (
 )
 
 from config import settings
-from engine import DecisaoLance, EstadoItem, MotorDecisao, RegraItem
+from engine import DecisaoLance, EstadoItem, MotorDecisao, RegraItem, EstadoItemEnum
+from estrategia_zonas import Zona, determinar_zona, analisar_zonas, MotorComZonas
 from supabase_client import AsyncLogQueue, EntradaLog, log_queue, registrar_lance
 
 logger = logging.getLogger(__name__)
@@ -116,9 +117,10 @@ class BrowserBot:
 
     def __init__(
         self,
-        motor: MotorDecisao,
+        motor: MotorDecisao | MotorComZonas | MotorComZonas,
         sessao_id: Optional[str] = None,
         licitacao_id: Optional[str] = None,
+        gui_queue: Optional[queue.Queue[GUIEvent]] = None,
     ) -> None:
         self.motor = motor
         self.sessao_id = sessao_id or str(uuid.uuid4())

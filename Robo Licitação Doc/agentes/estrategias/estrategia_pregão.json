@@ -1,0 +1,12 @@
+{
+  "nome": "estrategia_pregão",
+  "tipo_processo": "PREGÃO",
+  "regras": {
+    "preco_base": 1.15
+  },
+  "taxa_acerto": 0.75,
+  "total_usos": 1,
+  "data_criacao": "2026-09-11T07:32:40.695263",
+  "data_ultima_atualizacao": "2026-09-11T07:32:40.695266",
+  "observacoes": "Teste"
+}

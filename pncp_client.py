@@ -58,11 +58,23 @@ def buscar_compra(cnpj_orgao: str, ano: str, sequencial: str) -> dict[str, Any]:
     """
     url = f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}"
     logger.info(f"PNCP buscar_compra: {url}")
-    
-    with httpx.Client(timeout=15.0, headers=HEADERS_HTTP) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        return resp.json()
+
+    try:
+        with httpx.Client(timeout=15.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+            resp = client.get(url)
+            if resp.status_code == 404:
+                logger.warning(f"Compra não encontrada (404): {url}")
+                raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial}")
+            resp.raise_for_status()
+            return resp.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response and exc.response.status_code == 404:
+            raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial}")
+        logger.error(f"Erro HTTP ao buscar compra no PNCP: {exc}")
+        raise
+    except Exception as exc:
+        logger.error(f"Erro inesperado ao buscar compra no PNCP: {exc}")
+        raise
 
 
 def obter_itens_compra(cnpj_orgao: str, ano: str, sequencial: str) -> list[dict[str, Any]]:
@@ -97,14 +109,37 @@ def obter_arquivos_edital(
     """
     Baixa os PDFs oficiais anexados ao processo no PNCP para a pasta destino.
     Endpoint: GET /orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos
+
+    NOTA: Este endpoint pode retornar 404 se a licitação estiver encerrada ou
+    se o endpoint não estiver disponível na versão da API atual. Nesse caso,
+    retorna lista vazia sem erro fatal.
     """
     url = f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/arquivos"
     logger.info(f"PNCP obter_arquivos_edital: {url}")
-    
-    with httpx.Client(timeout=15.0, headers=HEADERS_HTTP) as client:
-        resp = client.get(url)
-        resp.raise_for_status()
-        arquivos = resp.json()
+
+    try:
+        with httpx.Client(timeout=15.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+            resp = client.get(url)
+            if resp.status_code == 404:
+                # Endpoint não existe ou licitação encerrada sem arquivos
+                logger.warning(
+                    f"Endpoint de arquivos não disponível (404) para "
+                    f"{cnpj_orgao}/{ano}/{sequencial}. "
+                    f"Verifique se a licitação ainda está ativa ou se o endpoint "
+                    f"está disponível na versão atual da API PNCP."
+                )
+                return []
+            resp.raise_for_status()
+            arquivos = resp.json()
+    except httpx.HTTPStatusError as exc:
+        if exc.response and exc.response.status_code == 404:
+            logger.warning(f"Endpoint de arquivos não disponível (404): {exc.request.url}")
+            return []
+        logger.error(f"Erro HTTP ao buscar arquivos do PNCP: {exc}")
+        return []
+    except Exception as exc:
+        logger.error(f"Erro inesperado ao buscar arquivos do PNCP: {exc}")
+        return []
 
     if not arquivos:
         logger.warning("Nenhum arquivo anexado encontrado para este certame no PNCP.")
@@ -120,7 +155,7 @@ def obter_arquivos_edital(
             titulo = arq.get("titulo") or f"edital_pncp_{idx}.pdf"
             if not titulo.lower().endswith(".pdf"):
                 titulo += ".pdf"
-            
+
             if url_dl:
                 nome_limpo = re.sub(r"[^\w\-.]", "_", titulo)
                 caminho_local = pasta / f"pncp_{cnpj_orgao}_{ano}_{sequencial}_{nome_limpo}"

@@ -138,6 +138,7 @@ class ItemEdital:
     valor_referencia: Optional[float] = None
     decremento_minimo: Optional[float] = None
     decremento_percentual: Optional[float] = None
+    tipo_item: str = "produto"   # "servico" ou "produto"
     piso_preco: Optional[float] = None
 
 
@@ -644,6 +645,8 @@ class EditalParser:
             r"(?:grupo\s+)?item\s+descri[çc][ãa]o\s+(?:catser\s+)?(?:unidade|un\.?|und\.?)\s+(?:qtd[e.]?|quantidade)",
             r"item\s+(?:n[º°.]?\s+)?descri[çc][ãa]o\s+(?:un\.?|unidade|und\.?)\s+(?:qtd[e.]?|quantidade)",
             r"item\s+descri[çc][ãa]o\s+(?:c[oó]digo\s+)?(?:un\.?|und\.?)\s+qtd",
+            # Formato ALETO/SRP: "ITEM UND QTD DESCRIÇÃO" (descrição NO FINAL)
+            r"\bITEM\s+(?:UND|unidade|und\.?)\s+\b(?:QTD|quantidade)\b\s+\bDESCRI[ÇC][ÃA]O\b",
         ]
 
         header_pos = -1
@@ -675,6 +678,23 @@ class EditalParser:
             r"^\s*(?:(\d{1,2})\s+)?(\d{1,4})\s*(.*?)$"
         )
 
+        # Regex para formato ALETO/SRP: "ITEM UND QTD DESCRIÇÃO" → linhas "NUM UND QTD Descrição..."
+        # Ex: "01 UND 200 Adesivo instantâneo universal 20g...", "02 UND 1500 ..."
+        re_inicio_item_aleto = re.compile(
+            r"^\s*(\d{1,4})\s+(UND|unidade|und\.?)\s+(\d[\d.,]*)\s*(.*)$",
+            re.IGNORECASE,
+        )
+
+        # Detectar qual formato de cabeçalho foi encontrado
+        usar_formato_aleto = bool(re.search(
+            r"\bITEM\s+(?:UND|unidade|und\.?)\s+\b(?:QTD|quantidade)\b\s+\bDESCRIÇÃO\b",
+            texto, re.IGNORECASE,
+        ))
+
+        # Armazenar unidade e qtd do item atual para uso ao salvar item anterior
+        unidade_atual: str | None = None
+        qtd_atual: float | None = None
+
         for linha in linhas:
             linha_strip = linha.strip()
 
@@ -698,32 +718,61 @@ class EditalParser:
                 continue
 
             # Tentar detectar início de novo item
-            m = re_inicio_item.match(linha_strip)
-            if m:
-                grupo_num = m.group(1)  # pode ser None
-                item_num_str = m.group(2)
-                resto = m.group(3).strip()
+            if usar_formato_aleto:
+                # Formato ALETO/SRP: "NUM UND QTD Descrição..." (ex: "01 UND 200 Adesivo...")
+                m = re_inicio_item_aleto.match(linha_strip)
+                if m:
+                    item_num = int(m.group(1))
+                    unidade_raw = m.group(2).upper()
+                    qtd_val = self._str_para_float(m.group(3))
+                    descricao_inicio = m.group(4).strip()
 
-                try:
-                    item_num = int(item_num_str)
-                except ValueError:
-                    # Não é número — acumular como parte da descrição
-                    bloco_atual.append(linha_strip)
-                    continue
+                    if 1 <= item_num <= 500:
+                        # Salvar item anterior se existir — usar os dados DO ITEM ANTERIOR
+                        if num_item_atual > 0 and bloco_atual:
+                            item = self._montar_item_tabela(
+                                num_item_atual, bloco_atual, resultado,
+                                unidade=unidade_atual, qtd=qtd_atual
+                            )
+                            if item:
+                                itens.append(item)
+                            bloco_atual = []
 
-                # Verificar se é um item plausível (1-500) e sequencial ou próximo
-                if 1 <= item_num <= 500:
-                    # Se já temos um item acumulado, salvar
-                    if num_item_atual > 0 and bloco_atual:
-                        item = self._montar_item_tabela(num_item_atual, bloco_atual, resultado)
-                        if item:
-                            itens.append(item)
-                        bloco_atual = []
+                        num_item_atual = item_num
+                        unidade_atual = unidade_raw
+                        qtd_atual = qtd_val
+                        # Sempre iniciar bloco com o item num, mesmo sem descrição na mesma linha
+                        bloco_atual.append(str(item_num))
+                        if descricao_inicio:
+                            bloco_atual.append(descricao_inicio)
+                        continue
+            else:
+                # Formato clássico: "NUM desc..." ou "GRUPO NUM ITEM NUM desc..."
+                m = re_inicio_item.match(linha_strip)
+                if m:
+                    grupo_num = m.group(1)  # pode ser None
+                    item_num_str = m.group(2)
+                    resto = m.group(3).strip()
 
-                    num_item_atual = item_num
-                    if resto:
-                        bloco_atual.append(resto)
-                    continue
+                    try:
+                        item_num = int(item_num_str)
+                    except ValueError:
+                        # Não é número — acumular como parte da descrição
+                        bloco_atual.append(linha_strip)
+                        continue
+
+                    if 1 <= item_num <= 500:
+                        # Se já temos um item acumulado, salvar
+                        if num_item_atual > 0 and bloco_atual:
+                            item = self._montar_item_tabela(num_item_atual, bloco_atual, resultado)
+                            if item:
+                                itens.append(item)
+                            bloco_atual = []
+
+                        num_item_atual = item_num
+                        if resto:
+                            bloco_atual.append(resto)
+                        continue
 
             # Acumular linha como parte da descrição do item atual
             if num_item_atual > 0:
@@ -739,9 +788,19 @@ class EditalParser:
         return itens
 
     def _montar_item_tabela(
-        self, num_item: int, linhas_bloco: list[str], resultado: ResultadoEdital
+        self,
+        num_item: int,
+        linhas_bloco: list[str],
+        resultado: ResultadoEdital,
+        unidade: str | None = None,
+        qtd: float | None = None,
     ) -> Optional[ItemEdital]:
-        """Monta um ItemEdital a partir de linhas acumuladas da tabela."""
+        """Monta um ItemEdital a partir de linhas acumuladas da tabela.
+
+        Suporta dois formatos:
+        - Formato clássico (com R$ na linha): valor é extraído do texto
+        - Formato ALETO/SRP (sem R$ — ata não preenchida): item é criado com valor=None
+        """
         texto_bloco = " ".join(linhas_bloco)
         texto_bloco = re.sub(r"\s+", " ", texto_bloco).strip()
 
@@ -754,42 +813,37 @@ class EditalParser:
         if m_val:
             val_ref = self._str_para_float(m_val.group(1))
 
-        # Item sem R$ não é item real de tabela de preços
-        if val_ref is None or val_ref <= 0:
-            return None
+        # SRP sem preços registrados: item sem R$ ainda é válido (valor será preenchido pelo licitante)
+        # O valor None indica que o usuário precisa fornecer o preço de referência na GUI
 
-        # Extrair unidade e quantidade da estrutura da tabela
-        # Formato típico: "CATSER_CODE UNIDADE QTD R$ VALOR R$ TOTAL"
-        # Ex: "27332 Und 1 R$ 154.509,50 R$ 154.509,50"
-        # Ex: "27464 Und 24 R$ 14.900,35 R$ 357.608,40"
-        qtd = 1.0
-        unidade = "UN"
+        # Usar unidade e qtd informados (formato ALETO/SRP) ou extrair da tabela
+        unidade_final = unidade if unidade is not None else "UN"
 
-        # Padrão específico para tabelas de licitação: CATSER + Unidade + Qtd
-        m_tabela = re.search(
-            r"\b\d{4,6}\s+"
-            r"(un[d.]?|und|turma|hora|m[eê]s|servi[çc]o|kg|par|l(?:t)?|cx|pç|peça|resma|metro)\s+"
-            r"(\d[\d.,]*)\s+"
-            r"R\$",
-            texto_bloco, re.IGNORECASE,
-        )
-        if m_tabela:
-            unidade = m_tabela.group(1).upper()
-            if unidade in ("UND", "UND.", "UN.", "UNID"):
-                unidade = "UN"
-            qtd_val = self._str_para_float(m_tabela.group(2))
-            if qtd_val > 0:
-                qtd = qtd_val
+        if qtd is not None and qtd > 0:
+            qtd_final = qtd
         else:
-            # Fallback: procurar unidade + qtd sem CATSER
-            m_qtd = self._padroes.QUANTIDADE_UNIDADE.search(texto_bloco)
-            if m_qtd:
-                qtd_val = self._str_para_float(m_qtd.group(1))
+            qtd_final = 1.0
+
+        # Tentar extrair unidade e qtd da estrutura da tabela (formato CATSER + Un + Qtd)
+        # Só roda se não tivermos unidade/qtd informados pelo formato ALETO/SRP
+        if unidade_final == "UN" and qtd_final == 1.0:
+            m_tabela = re.search(
+                r"\b\d{4,6}\s+"
+                r"(un[d.]?|und|turma|hora|m[eê]s|servi[çc]o|kg|par|l(?:t)?|cx|pç|peça|resma|metro)\s+"
+                r"(\d[\d.,]*)\s+"
+                r"R\$",
+                texto_bloco, re.IGNORECASE,
+            )
+            if m_tabela:
+                uf = m_tabela.group(1).upper()
+                if uf in ("UND", "UND.", "UN.", "UNID"):
+                    uf = "UN"
+                unidade_final = uf
+                qtd_val = self._str_para_float(m_tabela.group(2))
                 if qtd_val > 0:
-                    qtd = qtd_val
-                unidade = m_qtd.group(2).upper()
-                if unidade in ("UND", "UND.", "UN.", "UNID"):
-                    unidade = "UN"
+                    qtd_final = qtd_val
+
+        # Limpar descrição: remover código CATSER, unidade, qtd, R$ do texto
 
         # Limpar descrição: remover código CATSER, unidade, qtd, R$ do texto
         desc = texto_bloco
@@ -810,18 +864,14 @@ class EditalParser:
         return ItemEdital(
             numero_item=num_item,
             descricao=desc,
-            unidade_medida=unidade,
-            quantidade=qtd,
+            unidade_medida=unidade_final,
+            quantidade=qtd_final,
             valor_referencia=val_ref,
             decremento_minimo=resultado.regras.decremento_global_valor,
             decremento_percentual=resultado.regras.decremento_global_percent,
         )
 
     def _extrair_itens_explicitos(self, texto: str, resultado: ResultadoEdital) -> list[ItemEdital]:
-        """
-        Estratégia 2: Linhas com prefixo "ITEM N" ou "Item N" que tenham R$ próximo.
-        Só aceita itens que tenham valor monetário no contexto (forte sinal de item real).
-        """
         itens: dict[int, ItemEdital] = {}
 
         item_re = re.compile(

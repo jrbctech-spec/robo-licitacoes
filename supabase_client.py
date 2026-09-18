@@ -392,6 +392,49 @@ def salvar_oportunidade(dados: dict[str, Any]) -> dict[str, Any]:
         return dados
 
 
+def listar_licitacoes(termo_busca: str = "", limite: int = 50) -> list[dict[str, Any]]:
+    """
+    Lista licitações cadastradas no Supabase com contagem de itens, com suporte a filtro.
+    """
+    try:
+        query = (
+            get_client()
+            .table("licitacoes")
+            .select("*, itens_licitacao(id, numero_item, descricao, quantidade, valor_referencia, custo_unitario, margem_minima_percent, preco_minimo)")
+            .order("criado_em", desc=True)
+            .limit(limite)
+        )
+        if termo_busca:
+            termo = f"%{termo_busca}%"
+            query = query.or_(f"orgao.ilike.{termo},objeto.ilike.{termo},numero_pregao.ilike.{termo},numero_uasg.ilike.{termo}")
+        
+        resposta = query.execute()
+        return resposta.data or []
+    except Exception as exc:
+        logger.warning(f"Erro ao listar licitações do Supabase: {exc}")
+        return []
+
+
+def obter_licitacao_com_itens(licitacao_id: str) -> Optional[dict[str, Any]]:
+    """
+    Obtém uma licitação específica por ID com todos os seus itens associados.
+    """
+    try:
+        resposta = (
+            get_client()
+            .table("licitacoes")
+            .select("*, itens_licitacao(*)")
+            .eq("id", licitacao_id)
+            .single()
+            .execute()
+        )
+        return resposta.data
+    except Exception as exc:
+        logger.warning(f"Erro ao obter licitação '{licitacao_id}' do Supabase: {exc}")
+        return None
+
+
+
 def listar_oportunidades_salvas() -> list[dict[str, Any]]:
     """Retorna a lista de todas as oportunidades salvas no Supabase ou localmente."""
     try:
@@ -405,8 +448,9 @@ def listar_oportunidades_salvas() -> list[dict[str, Any]]:
         if resposta.data:
             return resposta.data
     except Exception as exc:
-        logger.warning(f"Não foi possível listar do Supabase (retornando locais): {exc}")
+        logger.warning(f"Não foi possível listar oportunidades do Supabase (retornando locais): {exc}")
 
     return _OPORTUNIDADES_MEMORIA_LOCAL
+
 
 
