@@ -1,207 +1,243 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
-monitor_nuvem.py – Script de varredura 24h em nuvem com envio de alertas para o Telegram.
-
-Executa:
-  1. Varredura no PNCP para os estados TO e GO filtrando categorias de TI da JRBC TECH.
-  2. Aplica regras de precificação e margens (30% Produtos / 50% Serviços) via engine.py.
-  3. Filtra duplicatas registradas localmente em JSON ou Supabase.
-  4. Envia mensagem formatada ao Telegram via API do Telegram Bot.
+scripts/monitor_nuvem.py
+Monitor autônomo 24h para o PNCP (Tocantins e Goiás) com alertas no Telegram.
+JRBC TECH - CNPJ: 65.488.003/0001-61
 """
 
-from __future__ import annotations
-
-import argparse
-import json
-import logging
 import os
 import sys
-import time
+import json
+import logging
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
-
 import requests
 
-BASE_DIR = Path(__file__).parent.parent.resolve()
-sys.path.insert(0, str(BASE_DIR))
-
-from engine import PrecificacaoItem, TipoItemEnum
-from pncp_client import buscar_publicacoes_pncp, extrair_params_pncp, minar_e_estruturar_certame
-
+# Configuração de Logs
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
-logger = logging.getLogger("monitor_nuvem")
+logger = logging.getLogger("MonitorNuvem")
 
-UFS_JRBC = ["TO", "GO"]
-KEYWORDS_TI_JRBC = ["suporte", "computador", "rede", "software", "ti"]
+# Credenciais e Variáveis de Ambiente
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+BASE_PNCP_URL = "https://pncp.gov.br/pncp-api/v1"
 
-ARQUIVO_SEEN = BASE_DIR / "data" / "alertas_enviados.json"
+# Diretório e Arquivo de Cache de Deduplicação
+CACHE_DIR = Path(__file__).resolve().parent.parent / "data"
+CACHE_FILE = CACHE_DIR / "certames_notificados.json"
+
+# Configuração de Filtros da JRBC TECH
+ESTADOS_ALVO = ["TO", "GO"]
+PALAVRAS_CHAVE_TI = [
+    "suporte", "manutencao", "computador", "notebook", "microcomputador",
+    "workstation", "rede", "cabeamento", "fibra", "servidor", "licenca",
+    "licenciamento", "software", "saas", "ti", "telecom", "nobreak",
+    "switch", "roteador", "helpdesk", "infraestrutura", "ti/telecom"
+]
+
+PALAVRAS_SERVICOS = [
+    "servico", "manutencao", "suporte", "instalacao", "configuracao",
+    "locacao", "treinamento", "consultoria", "implantacao", "operacao"
+]
 
 
-def carregar_vistos() -> set[str]:
-    """Carrega lista de certames já alertados."""
-    if ARQUIVO_SEEN.exists():
-        try:
-            with open(ARQUIVO_SEEN, "r", encoding="utf-8") as f:
-                return set(json.load(f))
-        except Exception:
-            return set()
-    return set()
-
-
-def salvar_vistos(vistos: set[str]) -> None:
-    """Salva a lista de certames alertados."""
-    ARQUIVO_SEEN.parent.mkdir(parents=True, exist_ok=True)
+def carregar_historico_notificados() -> set:
+    """Carrega o histórico de IDs de contratações já notificadas para evitar duplicatas."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not CACHE_FILE.exists():
+        return set()
     try:
-        with open(ARQUIVO_SEEN, "w", encoding="utf-8") as f:
-            json.dump(list(vistos), f, indent=2)
-    except Exception as exc:
-        logger.warning(f"Erro ao salvar vistos: {exc}")
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+            return set(dados.get("notificados", []))
+    except Exception as e:
+        logger.warning(f"Erro ao carregar cache de notificações: {e}. Iniciando conjunto vazio.")
+        return set()
 
 
-def enviar_mensagem_telegram(mensagem: str, bot_token: Optional[str] = None, chat_id: Optional[str] = None) -> bool:
+def salvar_historico_notificados(notificados: set):
+    """Salva os IDs no cache JSON de forma atômica."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"notificados": list(notificados), "ultima_atualizacao": datetime.now().isoformat()}, f, indent=2)
+        logger.info(f"Histórico atualizado com {len(notificados)} certames registrados.")
+    except Exception as e:
+        logger.error(f"Falha ao salvar histórico de notificações: {e}")
+
+
+def classificar_tipo_e_margem(objeto: str) -> dict:
     """
-    Envia mensagem formatada para o Telegram via API oficial.
-    Trata erros de conexão sem travar o processo.
+    Aplica as regras de negócio da JRBC TECH:
+    - SERVIÇO: 50% de margem líquida mínima.
+    - PRODUTO: 30% de margem líquida mínima.
     """
-    token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
-    chat = chat_id or os.getenv("TELEGRAM_CHAT_ID")
+    objeto_lower = objeto.lower()
+    eh_servico = any(palavra in objeto_lower for palavra in PALAVRAS_SERVICOS)
 
-    if not token or not chat:
-        logger.info("ℹ️ TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID não configurado. Exibindo mensagem no console:\n" + mensagem)
+    if eh_servico:
+        margem_percentual = 50.0
+        tipo = "SERVIÇO"
+        fator_piso = 0.50  # Lance mínimo estimado para preservar 50% de margem
+    else:
+        margem_percentual = 30.0
+        tipo = "PRODUTO"
+        fator_piso = 0.70  # Lance mínimo estimado para preservar 30% de margem
+
+    return {
+        "tipo": tipo,
+        "margem_percentual": margem_percentual,
+        "fator_piso": fator_piso
+    }
+
+
+def consultar_pncp_uf(uf: str, data_referencia: datetime) -> list:
+    """
+    Consulta a API pública do PNCP buscando compras publicadas na data informada para a UF.
+    """
+    data_str = data_referencia.strftime("%Y%m%d")
+    url = f"{BASE_PNCP_URL}/consultas/compras/quadro-aviso"
+    params = {
+        "dataPublicacao": data_str,
+        "uf": uf,
+        "pagina": 1,
+        "tamanhoPagina": 50
+    }
+
+    logger.info(f"Consultando PNCP para UF={uf} na data={data_str}...")
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        if resp.status_code == 200:
+            dados = resp.json()
+            return dados.get("data", []) or []
+        elif resp.status_code == 404:
+            logger.info(f"Nenhum registro encontrado no PNCP para {uf} na data {data_str}.")
+            return []
+        else:
+            logger.warning(f"Resposta inesperada da API do PNCP ({resp.status_code}): {resp.text[:200]}")
+            return []
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Erro de conexão com a API do PNCP para {uf}: {e}")
+        return []
+
+
+def enviar_alerta_telegram(certame: dict, precificacao: dict) -> bool:
+    """Envia mensagem formatada com botão inline diretamente para o Telegram do usuário."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        logger.warning("TELEGRAM_BOT_TOKEN ou TELEGRAM_CHAT_ID não definidos. Alerta não enviado.")
         return False
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    orgao = certame.get("orgaoEntidade", {}).get("razaoSocial", "Órgão Não Informado")
+    uasg = certame.get("unidadeOrgao", {}).get("codigoUnidade", "N/D")
+    uf = certame.get("unidadeOrgao", {}).get("ufSigla", "N/D")
+    municipio = certame.get("unidadeOrgao", {}).get("municipioNome", "")
+    localidade = f"{municipio} - {uf}" if municipio else uf
+
+    modalidade = certame.get("modalidadeNome", "Dispensa/Licitação")
+    numero = certame.get("numeroCompra", "")
+    ano = certame.get("anoCompra", "")
+    numero_processo = f"{numero}/{ano}" if numero and ano else "S/N"
+
+    objeto = certame.get("objetoCompra", "Sem descrição informada")
+    valor_total = certame.get("valorTotalEstimado") or 0.0
+
+    # Cálculo do Piso Seguro (Stop-loss para evitar operar no prejuízo)
+    piso_seguranca = valor_total * precificacao["fator_piso"] if valor_total > 0 else 0.0
+
+    data_abertura = certame.get("dataAberturaProposta") or certame.get("dataEncerramentoProposta") or "Consulte o edital"
+    if "T" in data_abertura:
+        try:
+            dt = datetime.fromisoformat(data_abertura.replace("Z", "+00:00"))
+            data_abertura = dt.strftime("%d/%m/%Y às %H:%M")
+        except Exception:
+            pass
+
+    # Link oficial no PNCP
+    cnpj = certame.get("orgaoEntidade", {}).get("cnpj", "")
+    sequencial = certame.get("sequencialCompra", "")
+    link_pncp = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{sequencial}" if cnpj and ano and sequencial else "https://pncp.gov.br"
+
+    texto = (
+        "🚨 *NOVA OPORTUNIDADE IDENTIFICADA — PNCP*\n\n"
+        f"🏛 *Órgão:* {orgao}\n"
+        f"📍 *Localidade:* {localidade} | *UASG:* {uasg}\n"
+        f"📋 *Modalidade:* {modalidade} nº {numero_processo}\n\n"
+        f"📝 *Objeto:*\n_{objeto[:350]}..._\n\n"
+        f"💰 *Valor Estimado:* R$ {valor_total:,.2f}\n"
+        f"🎯 *Margem Alvo:* {precificacao['margem_percentual']:.0f}% ({precificacao['tipo']})\n"
+        f"🛡 *Piso de Segurança (Lance Mínimo):* R$ {piso_seguranca:,.2f}\n\n"
+        f"📅 *Data da Sessão:* {data_abertura}\n"
+    )
+
+    url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat,
-        "text": mensagem,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": False,
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": texto,
+        "parse_mode": "Markdown",
+        "reply_markup": {
+            "inline_keyboard": [
+                [{"text": "📄 Acessar Edital no PNCP", "url": link_pncp}]
+            ]
+        }
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=10.0)
+        resp = requests.post(url_api, json=payload, timeout=15)
         if resp.status_code == 200:
-            logger.info("✅ Alerta enviado com sucesso para o Telegram!")
+            logger.info(f"Alerta enviado com sucesso via Telegram para o certame {numero_processo}.")
             return True
         else:
-            logger.warning(f"⚠️ Erro no envio do Telegram ({resp.status_code}): {resp.text}")
+            logger.error(f"Erro ao enviar alerta ao Telegram ({resp.status_code}): {resp.text}")
             return False
-    except Exception as exc:
-        logger.error(f"🚨 Falha de conexão ao enviar mensagem para o Telegram: {exc}")
+    except Exception as e:
+        logger.error(f"Exceção ao disparar mensagem para o Telegram: {e}")
         return False
 
 
-def formatar_alerta_telegram(
-    orgao: str,
-    uasg: str,
-    modalidade: str,
-    objeto: str,
-    valor_estimado: float,
-    tipo_item: TipoItemEnum,
-    precificacao: PrecificacaoItem,
-    data_sessao: Optional[str],
-    url_pncp: str,
-) -> str:
-    """Formata a mensagem do alerta para o Telegram."""
-    margem_txt = "30% (Produtos)" if tipo_item == TipoItemEnum.PRODUTO else "50% (Serviços)"
-    data_str = data_sessao or "Verificar no Edital"
+def main():
+    logger.info("=== INICIANDO VARREDURA 24H NO PNCP (JRBC TECH) ===")
+    notificados = carregar_historico_notificados()
+    novos_encontrados = 0
+    alertas_disparados = 0
 
-    return (
-        f"<b>🔔 NOVA OPORTUNIDADE PNCP - JRBC TECH</b>\n\n"
-        f"🏛 <b>Órgão:</b> {orgao} (UASG: {uasg})\n"
-        f"📋 <b>Modalidade:</b> {modalidade}\n"
-        f"📝 <b>Objeto:</b> {objeto[:200]}\n"
-        f"💰 <b>Valor Estimado:</b> R$ {valor_estimado:,.2f}\n"
-        f"📊 <b>Margem Mínima Sugerida:</b> {margem_txt}\n"
-        f"🛡 <b>Piso de Segurança (Mínimo):</b> R$ {precificacao.piso_seguranca:,.2f}\n"
-        f"📅 <b>Data/Hora Sessão:</b> {data_str}\n\n"
-        f"🔗 <a href='{url_pncp}'>Acessar Edital no PNCP</a>"
-    )
+    hoje = datetime.now()
+    dias_para_varrer = [hoje, hoje - timedelta(days=1)]
 
+    for dia in dias_para_varrer:
+        for uf in ESTADOS_ALVO:
+            itens = consultar_pncp_uf(uf=uf, data_referencia=dia)
+            for item in itens:
+                cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
+                ano = item.get("anoCompra", "")
+                seq = item.get("sequencialCompra", "")
+                id_unico = f"{cnpj}-{ano}-{seq}" if (cnpj and ano and seq) else item.get("numeroControlePNCP")
 
-def executar_monitoramento_nuvem(dry_run: bool = False) -> int:
-    """
-    Executa a varredura do PNCP para os estados de TO e GO.
-    """
-    vistos = carregar_vistos()
-    novos_alertas = 0
+                if not id_unico or id_unico in notificados:
+                    continue
 
-    logger.info("🔍 Iniciando varredura 24h PNCP (UFs: TO, GO)...")
+                objeto = item.get("objetoCompra", "").lower()
 
-    for uf in UFS_JRBC:
-        for kw in KEYWORDS_TI_JRBC:
-            try:
-                res = buscar_publicacoes_pncp(uf=uf, palavra_chave=kw, tamanho_pagina=15)
-                itens = res.get("data", [])
+                # Aplica filtro de palavras-chave de TI da JRBC TECH
+                if any(palavra in objeto for palavra in PALAVRAS_CHAVE_TI):
+                    novos_encontrados += 1
+                    logger.info(f"Oportunidade aderente encontrada: [{uf}] {item.get('objetoCompra')[:80]}")
 
-                for item in itens:
-                    cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
-                    ano = item.get("anoCompra", "")
-                    seq = item.get("sequencialCompra", "")
-                    if not cnpj or not ano or not seq:
-                        continue
+                    precificacao = classificar_tipo_e_margem(item.get("objetoCompra", ""))
+                    sucesso = enviar_alerta_telegram(certame=item, precificacao=precificacao)
 
-                    id_unico = f"{cnpj}/{ano}/{seq}"
-                    if id_unico in vistos:
-                        continue
+                    # Registra no histórico para evitar reenvio
+                    notificados.add(id_unico)
+                    if sucesso:
+                        alertas_disparados += 1
 
-                    # Determinar tipo de item e margem (produtos 30% / servicos 50%)
-                    obj_texto = (item.get("objetoCompra") or "").lower()
-                    if any(s in obj_texto for s in ["suporte", "manutencao", "instalacao", "servico", "horas"]):
-                        tipo_item = TipoItemEnum.SERVICO
-                    else:
-                        tipo_item = TipoItemEnum.PRODUTO
-
-                    val_est = float(item.get("valorTotalEstimado") or 0.0)
-                    custo_base = val_est * 0.70 if val_est > 0 else 1000.0
-
-                    prec = PrecificacaoItem(
-                        tipo_item=tipo_item,
-                        custo_base=custo_base,
-                        valor_referencia_edital=val_est if val_est > 0 else None,
-                    )
-
-                    orgao = item.get("orgaoEntidade", {}).get("razaoSocial", "Órgão Desconhecido")
-                    uasg = str(item.get("unidadeOrgao", {}).get("codigoUnidade", cnpj[:6]))
-                    modalidade = item.get("modalidadeNome", "Dispensa Eletrônica / Pregão")
-                    objeto = item.get("objetoCompra", "Objeto não informado")
-                    data_sessao = item.get("dataAberturaProposta") or item.get("dataEncerramentoProposta")
-                    url_pncp = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
-
-                    msg_telegram = formatar_alerta_telegram(
-                        orgao=orgao,
-                        uasg=uasg,
-                        modalidade=modalidade,
-                        objeto=objeto,
-                        valor_estimado=val_est,
-                        tipo_item=tipo_item,
-                        precificacao=prec,
-                        data_sessao=data_sessao,
-                        url_pncp=url_pncp,
-                    )
-
-                    if not dry_run:
-                        enviar_mensagem_telegram(msg_telegram)
-                    else:
-                        logger.info(f"[DRY-RUN] Alerta gerado para {id_unico}:\n{msg_telegram}")
-
-                    vistos.add(id_unico)
-                    novos_alertas += 1
-
-            except Exception as exc:
-                logger.warning(f"Erro na busca PNCP [{uf}/{kw}]: {exc}")
-
-    salvar_vistos(vistos)
-    logger.info(f"🏁 Varredura concluída. Novos alertas gerados: {novos_alertas}")
-    return novos_alertas
+    salvar_historico_notificados(notificados)
+    logger.info(f"Varredura concluída. {novos_encontrados} oportunidades avaliadas, {alertas_disparados} alertas enviados.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Monitoramento 24h PNCP em Nuvem com Alertas no Telegram")
-    parser.add_argument("--once", action="store_true", help="Executa apenas uma rodada e encerra")
-    parser.add_argument("--dry-run", action="store_true", help="Não envia mensagens reais ao Telegram")
-    args = parser.parse_args()
-
-    executar_monitoramento_nuvem(dry_run=args.dry_run)
+    main()
