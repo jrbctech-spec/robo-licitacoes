@@ -85,7 +85,7 @@ class PrecificacaoItem(BaseModel):
 
         # 3. Piso de Segurança = Custo Total + Margem Mínima
         piso = self.custo_total * (1.0 + (self.margem_liquida_minima_percentual / 100.0))
-        self.piso_seguranca = Decimal(str(piso)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP).__float__()
+        self.piso_seguranca = float(Decimal(str(piso)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
         # 4. Preço de Abertura = Teto do Edital
         if self.valor_referencia_edital and self.valor_referencia_edital > 0:

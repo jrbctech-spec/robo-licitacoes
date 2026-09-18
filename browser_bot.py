@@ -597,7 +597,6 @@ def testar_pre_voo_comprasgov(timeout_ms: int = 10000) -> tuple[bool, str]:
                 return False, msg
 
     except Exception as exc:
-        msg = f"Modo simulação / sem conexão externa: {exc}"
-        logger.warning(f"⚠️ Health-check Compras.gov.br: {msg}")
-        # Retorna True em modo simulação sem internet para não travar execuções offline
-        return True, f"Pré-voo concluído em modo de tolerância: {exc}"
+        msg = f"Falha de conexão / browser no health-check Compras.gov.br: {exc}"
+        logger.warning(f"⚠️ {msg}")
+        return False, msg
