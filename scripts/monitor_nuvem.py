@@ -10,9 +10,20 @@ import os
 import sys
 import json
 import logging
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
+
+
+def remover_acentos(texto: str) -> str:
+    """Remove acentos e caracteres especiais para normalização de buscas de texto."""
+    if not texto:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    ).lower()
 
 # Configuração de Logs
 logging.basicConfig(
@@ -77,8 +88,8 @@ def classificar_tipo_e_margem(objeto: str) -> dict:
     - SERVIÇO: 50% de margem líquida mínima.
     - PRODUTO: 30% de margem líquida mínima.
     """
-    objeto_lower = objeto.lower()
-    eh_servico = any(palavra in objeto_lower for palavra in PALAVRAS_SERVICOS)
+    objeto_norm = remover_acentos(objeto)
+    eh_servico = any(remover_acentos(palavra) in objeto_norm for palavra in PALAVRAS_SERVICOS)
 
     if eh_servico:
         margem_percentual = 50.0
@@ -220,10 +231,10 @@ def main():
                 if not id_unico or id_unico in notificados:
                     continue
 
-                objeto = item.get("objetoCompra", "").lower()
+                objeto_norm = remover_acentos(item.get("objetoCompra", ""))
 
                 # Aplica filtro de palavras-chave de TI da JRBC TECH
-                if any(palavra in objeto for palavra in PALAVRAS_CHAVE_TI):
+                if any(remover_acentos(palavra) in objeto_norm for palavra in PALAVRAS_CHAVE_TI):
                     novos_encontrados += 1
                     logger.info(f"Oportunidade aderente encontrada: [{uf}] {item.get('objetoCompra')[:80]}")
 

@@ -19,7 +19,18 @@ from enum import Enum
 from typing import Any, Optional
 from pydantic import BaseModel, Field
 
+import unicodedata
 import httpx
+
+
+def remover_acentos(texto: str) -> str:
+    """Remove acentos e caracteres especiais para normalização de buscas de texto."""
+    if not texto:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    ).lower()
 
 from supabase_client import inserir_item, inserir_licitacao
 
@@ -380,13 +391,13 @@ def buscar_publicacoes_pncp(
             except Exception as exc_req:
                 logger.warning(f"Erro ao consultar modalidade {mod} no PNCP: {exc_req}")
 
-    # Aplica filtro por palavra-chave localmente
+    # Aplica filtro por palavra-chave localmente com suporte a acentos
     if palavra_chave and palavra_chave.strip():
-        kw = palavra_chave.strip().lower()
+        kw_norm = remover_acentos(palavra_chave.strip())
         todos_itens = [
             i for i in todos_itens
-            if kw in (i.get("objetoCompra") or "").lower()
-            or kw in (i.get("orgaoEntidade", {}).get("razaoSocial") or "").lower()
+            if kw_norm in remover_acentos(i.get("objetoCompra") or "")
+            or kw_norm in remover_acentos(i.get("orgaoEntidade", {}).get("razaoSocial") or "")
         ]
 
     return {
