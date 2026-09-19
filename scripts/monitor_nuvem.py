@@ -10,9 +10,21 @@ import os
 import sys
 import json
 import logging
+import unicodedata
 from datetime import datetime, timedelta
 from pathlib import Path
 import requests
+
+
+def remover_acentos(texto: str) -> str:
+    """Remove acentos e caracteres especiais para normalização de buscas de texto."""
+    if not texto:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    ).lower()
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,8 +78,9 @@ def salvar_historico_notificados(notificados: set):
 
 
 def classificar_tipo_e_margem(objeto: str) -> dict:
-    objeto_lower = objeto.lower()
-    eh_servico = any(palavra in objeto_lower for palavra in PALAVRAS_SERVICOS)
+    objeto_norm = remover_acentos(objeto)
+    eh_servico = any(remover_acentos(palavra) in objeto_norm for palavra in PALAVRAS_SERVICOS)
+
     if eh_servico:
         return {
             "tipo": "SERVIÇO",
@@ -202,9 +215,10 @@ def main():
                 if not id_unico or id_unico in notificados:
                     continue
 
-                objeto = item.get("objetoCompra", "").lower()
-                if any(palavra in objeto for palavra in PALAVRAS_CHAVE_TI):
+                objeto_norm = remover_acentos(item.get("objetoCompra", ""))
+                if any(remover_acentos(palavra) in objeto_norm for palavra in PALAVRAS_CHAVE_TI):
                     novos += 1
+                    logger.info(f"Oportunidade encontrada: [{uf}] {item.get('objetoCompra')[:80]}")
                     precificacao = classificar_tipo_e_margem(item.get("objetoCompra", ""))
                     if enviar_alerta_telegram(certame=item, precificacao=precificacao):
                         alertas += 1
