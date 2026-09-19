@@ -23,6 +23,18 @@ from typing import Any, Callable, Optional, Dict, List
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
 
+import csv
+
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
+
+try:
+    import openpyxl
+except ImportError:
+    openpyxl = None
+
 try:
     from config import ModoOperacao, settings
     from engine import (
@@ -30,6 +42,8 @@ try:
         EstadoItemEnum,
         MotivoBloqueio,
         MotorDecisao,
+        PrecificacaoItem,
+        TipoItemEnum,
         RegraItem,
     )
     from edital_parser import (
@@ -101,6 +115,155 @@ PALAVRAS_CHAVE_EDITAL = [
     "CONCORRENCIA", "LEILÃO", "LEILAO", "UASG", "AVISO DE LICITAÇÃO",
     "PROCESSO ADMINISTRATIVO", "EDITAL", "COMPRAS.GOV", "INEXIGIBILIDADE"
 ]
+
+
+def parsear_planilha_processo(caminho_arquivo: str | Path) -> ResultadoEdital:
+    """
+    Lê instantaneamente uma planilha (.xlsx ou .csv) contendo os itens do certame.
+    Mapeia colunas flexíveis: Item, Descrição, Qtd, Unidade, Preço Ref, Custo Real, Tipo.
+    Gera as regras do motor com a precificação da JRBC TECH.
+    """
+    caminho = Path(caminho_arquivo)
+    resultado = ResultadoEdital(caminho_pdf=str(caminho))
+
+    if not caminho.exists():
+        resultado.erros_parsing.append(f"Arquivo não encontrado: {caminho}")
+        return resultado
+
+    linhas_dict: list[dict[str, Any]] = []
+
+    # 1. Leitura via pandas/openpyxl ou csv
+    if caminho.suffix.lower() == ".csv":
+        try:
+            with open(caminho, mode="r", encoding="utf-8-sig", errors="ignore") as f:
+                reader = csv.DictReader(f)
+                linhas_dict = list(reader)
+        except Exception as exc:
+            logger.warning(f"Erro ao ler CSV com csv.DictReader: {exc}")
+    elif pd is not None and caminho.suffix.lower() in (".xlsx", ".xls"):
+        try:
+            df = pd.read_excel(caminho)
+            linhas_dict = df.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning(f"Erro ao ler Excel via pandas: {exc}")
+    elif openpyxl is not None and caminho.suffix.lower() == ".xlsx":
+        try:
+            wb = openpyxl.load_workbook(caminho, data_only=True)
+            sheet = wb.active
+            headers = [str(cell.value or "").strip() for cell in sheet[1]]
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                if any(row):
+                    row_dict = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
+                    linhas_dict.append(row_dict)
+        except Exception as exc:
+            logger.warning(f"Erro ao ler Excel via openpyxl: {exc}")
+
+    if not linhas_dict:
+        resultado.erros_parsing.append("Incapaz de extrair linhas da planilha. Verifique a extensão ou formato.")
+        return resultado
+
+    # Mapeamento flexível de colunas
+    itens_extraidos: list[ItemEdital] = []
+    for idx, row in enumerate(linhas_dict, 1):
+        if not isinstance(row, dict):
+            continue
+
+        # Normalizar nomes de colunas
+        row_norm = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
+
+        # Encontrar campo do item
+        num_item = idx
+        for col_name in ("item", "num", "numero", "n_item", "n_"):
+            if col_name in row_norm and row_norm[col_name] is not None:
+                try:
+                    num_item = int(float(str(row_norm[col_name]).strip()))
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Encontrar campo de descrição
+        desc = ""
+        for col_name in ("descricao", "desc", "produto", "servico", "item_descricao", "objeto"):
+            if col_name in row_norm and row_norm[col_name]:
+                desc = str(row_norm[col_name]).strip()
+                break
+
+        if not desc:
+            # Fallback: pega a primeira coluna de texto longo
+            for v in row_norm.values():
+                if isinstance(v, str) and len(v) > 3:
+                    desc = v.strip()
+                    break
+
+        if not desc:
+            continue
+
+        # Quantidade
+        qtd = 1.0
+        for col_name in ("qtd", "quantidade", "quant"):
+            if col_name in row_norm and row_norm[col_name] is not None:
+                try:
+                    val_q = float(str(row_norm[col_name]).replace(",", "."))
+                    if val_q > 0:
+                        qtd = val_q
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        # Unidade
+        unidade = "UN"
+        for col_name in ("unidade", "und", "un"):
+            if col_name in row_norm and row_norm[col_name]:
+                unidade = str(row_norm[col_name]).strip().upper()
+                break
+
+        # Preço de referência / valor estimado
+        val_ref = None
+        for col_name in ("preco_ref", "valor_ref", "valor_referencia", "preco_referencia", "estimado", "teto", "valor_total"):
+            if col_name in row_norm and row_norm[col_name] is not None:
+                try:
+                    raw_val = row_norm[col_name]
+                    if isinstance(raw_val, (int, float)):
+                        val_r = float(raw_val)
+                    else:
+                        val_str = str(raw_val).replace("R$", "").strip()
+                        if "," in val_str and "." in val_str:
+                            val_str = val_str.replace(".", "").replace(",", ".")
+                        elif "," in val_str:
+                            val_str = val_str.replace(",", ".")
+                        val_r = float(val_str)
+                    if val_r > 0:
+                        val_ref = val_r
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        # Tipo de item (Produto ou Serviço)
+        tipo_str = "PRODUTO"
+        for col_name in ("tipo", "tipo_item", "categoria"):
+            if col_name in row_norm and row_norm[col_name]:
+                val_t = str(row_norm[col_name]).strip().upper()
+                if "SERV" in val_t:
+                    tipo_str = "SERVICO"
+                break
+
+        if tipo_str == "PRODUTO" and any(s in desc.lower() for s in ("serviço", "servico", "manutenção", "manutencao", "suporte", "instalação", "instalacao")):
+            tipo_str = "SERVICO"
+
+        item_e = ItemEdital(
+            numero_item=num_item,
+            descricao=desc,
+            unidade_medida=unidade,
+            quantidade=qtd,
+            valor_referencia=val_ref,
+            tipo_item=tipo_str.lower(),
+        )
+        itens_extraidos.append(item_e)
+
+    resultado.itens = sorted(itens_extraidos, key=lambda x: x.numero_item)
+    resultado.sucesso = len(resultado.itens) > 0
+    resultado.numero_pregao = caminho.stem
+    return resultado
 
 
 def eh_edital_pdf_valido(caminho_pdf: str) -> bool:
@@ -285,17 +448,30 @@ class PainelEditais(ctk.CTkFrame):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
-        # Bar de Upload / Fontes
+        # Diretório de Processos de Licitações (Caminho Padrão)
+        default_folder = "/home/jrbc/Documentos/PASTA DE PROCESSOS DE LICITAÇOES"
+        if not os.path.exists(default_folder):
+            user_docs = os.path.expanduser("~/Documentos")
+            default_folder = user_docs if os.path.exists(user_docs) else os.path.expanduser("~")
+
         card_upload = CardFrame(self)
         card_upload.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
-        card_upload.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        card_upload.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(card_upload, text="📄  Importar Edital / Processo de Licitação", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, columnspan=4, sticky="w", padx=16, pady=(10, 6))
+        ctk.CTkLabel(card_upload, text="📁  Diretório de Processos de Licitações:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
 
-        ctk.CTkButton(card_upload, text="📁 Selecionar PDF de Edital", fg_color=COR["cyan_primary"], text_color="#000000", font=ctk.CTkFont(weight="bold"), height=34, command=self._carregar_pdf_local).grid(row=1, column=0, padx=8, pady=(0, 10), sticky="ew")
-        ctk.CTkButton(card_upload, text="📂 Escanear Pasta (Filtro Rápido)", fg_color=COR["bg_card_hover"], border_color=COR["cyan_primary"], border_width=1, text_color=COR["text_primary"], height=34, command=self._escanear_pasta_processos).grid(row=1, column=1, padx=8, pady=(0, 10), sticky="ew")
-        ctk.CTkButton(card_upload, text="🌐 Importar do PNCP", fg_color=COR["purple_accent"], text_color="#FFFFFF", font=ctk.CTkFont(weight="bold"), height=34, command=lambda: self.app.selecionar_aba("🌐  Oportunidades PNCP")).grid(row=1, column=2, padx=8, pady=(0, 10), sticky="ew")
-        ctk.CTkButton(card_upload, text="📊 Importar Proposta PDF", fg_color=COR["blue_accent"], text_color="#000000", font=ctk.CTkFont(weight="bold"), height=34, command=self._carregar_proposta_pdf).grid(row=1, column=3, padx=8, pady=(0, 10), sticky="ew")
+        self.txt_pasta_processos = ctk.CTkEntry(card_upload, font=ctk.CTkFont(size=12))
+        self.txt_pasta_processos.insert(0, default_folder)
+        self.txt_pasta_processos.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
+
+        btn_browse = ctk.CTkButton(card_upload, text="🔍 Selecionar", width=100, fg_color=COR["bg_card_hover"], border_color=COR["cyan_primary"], border_width=1, command=self._selecionar_pasta_processos)
+        btn_browse.grid(row=0, column=2, padx=4, pady=10)
+
+        btn_refresh = ctk.CTkButton(card_upload, text="🔄 Atualizar Lista de Processos", font=ctk.CTkFont(weight="bold"), fg_color=COR["cyan_primary"], text_color="#000000", command=self._escanear_pasta_processos)
+        btn_refresh.grid(row=0, column=3, padx=4, pady=10)
+
+        btn_excel = ctk.CTkButton(card_upload, text="📊 Carregar Planilha Excel do Certame", font=ctk.CTkFont(weight="bold"), fg_color=COR["purple_accent"], text_color="#FFFFFF", command=self._carregar_planilha_manual)
+        btn_excel.grid(row=0, column=4, padx=(4, 16), pady=10)
 
         # Seletor de Certame Ativo (Multi-Pregão)
         card_seletor = CardFrame(self)
@@ -315,14 +491,6 @@ class PainelEditais(ctk.CTkFrame):
 
         btn_remover = ctk.CTkButton(card_seletor, text="🗑️ Remover", width=90, fg_color=COR["red_danger"], text_color="#FFFFFF", command=self._remover_certame_atual)
         btn_remover.grid(row=0, column=2, padx=(4, 16), pady=10)
-
-        # Status Bar
-        self.card_info = CardFrame(self)
-        self.card_info.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
-        self.card_info.grid_columnconfigure(0, weight=1)
-
-        self.lbl_edital_status = ctk.CTkLabel(self.card_info, text="Pronto para carregar edital. Selecione um PDF ou escaneie uma pasta.", font=ctk.CTkFont(size=12), text_color=COR["text_secondary"])
-        self.lbl_edital_status.grid(row=0, column=0, sticky="w", padx=16, pady=8)
 
         # Tabela de Itens & Stop Loss
         card_itens = CardFrame(self)
@@ -364,36 +532,69 @@ class PainelEditais(ctk.CTkFrame):
         self.tree_itens.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
 
-    def _carregar_pdf_local(self) -> None:
-        doc_dir = os.path.expanduser("~/Documentos") if os.path.exists(os.path.expanduser("~/Documentos")) else os.path.expanduser("~")
-        path = filedialog.askopenfilename(
-            title="Selecionar PDF de Edital",
-            initialdir=doc_dir,
-            filetypes=[("Arquivos PDF", "*.pdf"), ("Todos os arquivos", "*.*")]
-        )
-        if not path:
-            return
-        
-        # Filtro prévio ultra-rápido (<0.05s)
-        if not eh_edital_pdf_valido(path):
-            messagebox.showwarning("Arquivo Não É Edital", f"O arquivo '{Path(path).name}' não possui termos característicos de licitação/edital e foi ignorado.")
+    def _selecionar_pasta_processos(self) -> None:
+        atual = self.txt_pasta_processos.get().strip()
+        doc_dir = atual if os.path.exists(atual) else (os.path.expanduser("~/Documentos") if os.path.exists(os.path.expanduser("~/Documentos")) else os.path.expanduser("~"))
+        folder = filedialog.askdirectory(title="Selecionar Diretório de Processos de Licitações", initialdir=doc_dir)
+        if folder:
+            self.txt_pasta_processos.delete(0, "end")
+            self.txt_pasta_processos.insert(0, folder)
+            self._escanear_pasta_processos()
+
+    def _escanear_pasta_processos(self) -> None:
+        folder = self.txt_pasta_processos.get().strip()
+        if not os.path.exists(folder):
+            messagebox.showwarning("Pasta Não Encontrada", f"O diretório '{folder}' não foi encontrado.")
             return
 
-        self.lbl_edital_status.configure(text=f"⏳ Analisando edital: {Path(path).name}...", text_color=COR["amber_warning"])
-        
         def _worker():
             try:
-                parser = EditalParser()
-                res = parser.parsear(path)
-                self.after(0, lambda: self._on_edital_carregado(res, Path(path).name))
+                encontrados = []
+                # Varre subpastas e raiz procurando por planilhas .xlsx e .csv
+                for root, _, files in os.walk(folder):
+                    for f in files:
+                        if f.lower().endswith((".xlsx", ".csv")) and not f.startswith("~$"):
+                            encontrados.append(os.path.join(root, f))
+
+                for file_path in encontrados:
+                    res = parsear_planilha_processo(file_path)
+                    if res and res.itens:
+                        nome_c = f"Certame {res.numero_pregao or Path(file_path).stem} - {Path(file_path).name}"
+                        self.after(0, lambda n=nome_c, r=res: self.app.adicionar_licitacao(n, r))
+
+                if encontrados:
+                    msg = f"✅ Varredura concluída! {len(encontrados)} planilha(s) de processo identificada(s)."
+                    self.after(0, lambda: messagebox.showinfo("Lista de Processos Atualizada", msg))
+                else:
+                    self.after(0, lambda: messagebox.showinfo("Processos", "Nenhuma planilha (.xlsx ou .csv) encontrada na pasta de processos."))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro no PDF", str(exc)))
+                self.after(0, lambda: messagebox.showerror("Erro ao Escanear Pasta", str(exc)))
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _on_edital_carregado(self, res: ResultadoEdital, nome_arquivo: str) -> None:
-        nome_certame = f"Pregão {res.numero_pregao or 'S/N'} - {nome_arquivo}"
-        self.app.adicionar_licitacao(nome_certame, res)
+    def _carregar_planilha_manual(self) -> None:
+        folder = self.txt_pasta_processos.get().strip()
+        initial = folder if os.path.exists(folder) else os.path.expanduser("~/Documentos")
+        path = filedialog.askopenfilename(
+            title="Selecionar Planilha Excel do Certame",
+            initialdir=initial,
+            filetypes=[("Planilhas Excel/CSV", "*.xlsx;*.csv"), ("Arquivos Excel", "*.xlsx"), ("Arquivos CSV", "*.csv"), ("Todos os arquivos", "*.*")]
+        )
+        if not path:
+            return
+
+        def _worker():
+            try:
+                res = parsear_planilha_processo(path)
+                if res and res.itens:
+                    nome_c = f"Certame {res.numero_pregao or Path(path).stem} - {Path(path).name}"
+                    self.after(0, lambda: self.app.adicionar_licitacao(nome_c, res))
+                else:
+                    self.after(0, lambda: messagebox.showwarning("Planilha Sem Itens Válidos", "Não foram encontrados itens com cabeçalho reconhecido na planilha."))
+            except Exception as exc:
+                self.after(0, lambda: messagebox.showerror("Erro ao Carregar Planilha", f"Falha ao ler a planilha: {exc}"))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def atualizar_lista_certames(self) -> None:
         cat = self.app.catalogo_licitacoes
@@ -402,7 +603,6 @@ class PainelEditais(ctk.CTkFrame):
             self.cmb_certames.set("(Nenhum pregão carregado)")
             for row in self.tree_itens.get_children():
                 self.tree_itens.delete(row)
-            self.lbl_edital_status.configure(text="Nenhuma licitação ativa.", text_color=COR["text_secondary"])
             return
 
         lista_chaves = list(cat.keys())
@@ -425,29 +625,38 @@ class PainelEditais(ctk.CTkFrame):
             self.tree_itens.delete(row)
 
         for item in res.itens:
-            val_ref = f"R$ {item.valor_referencia:,.2f}" if item.valor_referencia else "N/A"
-            custo_default = item.valor_referencia * 0.75 if item.valor_referencia else 100.0
-            piso_default = custo_default * 1.15
-            prop_default = item.valor_referencia * 0.985 if item.valor_referencia else 115.0
+            val_ref_str = f"R$ {item.valor_referencia:,.2f}" if item.valor_referencia else "N/A"
+
+            # Custo real e tipo de item
+            custo_base = item.valor_referencia * 0.70 if item.valor_referencia else 100.0
+            tipo_enum = TipoItemEnum.SERVICO if (item.tipo_item and "serv" in item.tipo_item.lower()) else TipoItemEnum.PRODUTO
+
+            prec = PrecificacaoItem(
+                tipo_item=tipo_enum,
+                custo_base=custo_base,
+                valor_referencia_edital=item.valor_referencia
+            )
+
+            piso_str = f"R$ {prec.piso_seguranca:,.2f}"
+            prop_inicial = prec.preco_abertura
+            prop_str = f"R$ {prop_inicial:,.2f}"
+            margem_str = f"{prec.margem_liquida_minima_percentual:.1f}%"
 
             self.tree_itens.insert(
                 "",
                 "end",
                 values=(
                     item.numero_item,
-                    item.descricao[:80],
+                    item.descricao[:100],
                     item.quantidade,
                     item.unidade_medida,
-                    val_ref,
-                    f"{custo_default:.2f}",
-                    "15.0%",
-                    f"R$ {piso_default:,.2f}",
-                    f"R$ {prop_default:,.2f}",
+                    val_ref_str,
+                    f"{prec.custo_total:.2f}",
+                    margem_str,
+                    piso_str,
+                    prop_str,
                 ),
             )
-
-        msg = f"✅ {nome_chave} | {len(res.itens)} item(ns) identificados | Pregão: {res.numero_pregao or 'N/A'}"
-        self.lbl_edital_status.configure(text=msg, text_color=COR["green_success"])
 
     def _remover_certame_atual(self) -> None:
         certame = self.cmb_certames.get()
@@ -457,53 +666,6 @@ class PainelEditais(ctk.CTkFrame):
             self.atualizar_lista_certames()
             self.app.painel_dashboard.atualizar_catalogo()
             messagebox.showinfo("Removido", f"Licitação '{certame}' removida do catálogo atual.")
-
-    def _escanear_pasta_processos(self) -> None:
-        doc_dir = os.path.expanduser("~/Documentos") if os.path.exists(os.path.expanduser("~/Documentos")) else os.path.expanduser("~")
-        folder = filedialog.askdirectory(title="Selecionar Pasta de Licitações", initialdir=doc_dir)
-        if not folder:
-            return
-        self.lbl_edital_status.configure(text=f"⏳ Escaneando pasta com Filtro Rápido: {folder}...", text_color=COR["amber_warning"])
-
-        def _worker():
-            try:
-                # Busca todos os PDFs na pasta
-                todos_pdfs = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(".pdf")]
-                
-                # Aplica o Filtro Rápido (<0.01s por arquivo)
-                editais_validos = [p for p in todos_pdfs if eh_edital_pdf_valido(p)]
-                ignorados = len(todos_pdfs) - len(editais_validos)
-
-                parser = EditalParser()
-                carregados = 0
-                for path in editais_validos:
-                    try:
-                        res = parser.parsear(path)
-                        if res and res.itens:
-                            nome_c = f"Pregão {res.numero_pregao or 'S/N'} - {Path(path).name}"
-                            self.after(0, lambda n=nome_c, r=res: self.app.adicionar_licitacao(n, r))
-                            carregados += 1
-                    except Exception as err:
-                        logger.warning(f"Erro ao parsear {path}: {err}")
-
-                msg_fin = f"✅ Varredura concluída! {carregados} edital(is) carregado(s). ({ignorados} arquivo(s) não-edital ignorados instantaneamente)."
-                self.after(0, lambda: self.lbl_edital_status.configure(text=msg_fin, text_color=COR["green_success"]))
-                self.after(0, lambda: messagebox.showinfo("Varredura Inteligente", msg_fin))
-            except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro no Scanner", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _carregar_proposta_pdf(self) -> None:
-        doc_dir = os.path.expanduser("~/Documentos") if os.path.exists(os.path.expanduser("~/Documentos")) else os.path.expanduser("~")
-        path = filedialog.askopenfilename(
-            title="Selecionar Proposta PDF",
-            initialdir=doc_dir,
-            filetypes=[("Arquivos PDF", "*.pdf"), ("Todos os arquivos", "*.*")]
-        )
-        if not path:
-            return
-        messagebox.showinfo("Proposta PDF", f"Proposta '{Path(path).name}' importada para cálculo de preços!")
 
 
 # ─── PAINEL 3: CONSOLE DA SESSÃO AO VIVO ──────────────────────────────────────
