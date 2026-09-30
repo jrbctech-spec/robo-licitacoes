@@ -1415,6 +1415,32 @@ class PainelPNCP(ctk.CTkFrame):
 
 
 # ─── APLICAÇÃO PRINCIPAL (APP MULTI-CERTAME) ──────────────────────────────────
+class PainelServicos(ctk.CTkFrame):
+    def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.app = app
+        ctk.CTkLabel(self, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        
+        ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", command=lambda: print("Analisando TR com LLM...")).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=lambda: print("Calculando Logística...")).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=lambda: print("Gerando Planilha...")).grid(row=0, column=2, padx=10)
+
+class PainelProdutos(ctk.CTkFrame):
+    def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.app = app
+        ctk.CTkLabel(self, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(pady=10)
+        
+        ctk.CTkButton(btn_frame, text="🔍 Cruzamento Distribuidor").grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="📦 Checar Estoque").grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="🚀 Lançar Proposta").grid(row=0, column=2, padx=10)
+
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -1457,6 +1483,8 @@ class App(ctk.CTk):
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         abas = [
             ("📊  Dashboard", "dashboard"),
+            ("🛠️  Serviços & Field Service", "servicos"),
+            ("📦  Venda de Produtos", "produtos"),
             ("📄  Editais & Custos", "editais"),
             ("⚡  Console da Sessão", "sessao"),
             ("🌐  Oportunidades PNCP", "pncp"),
@@ -1488,11 +1516,15 @@ class App(ctk.CTk):
 
         # Painéis
         self.painel_dashboard = PainelDashboard(self.tab_container, app=self)
+        self.painel_servicos = PainelServicos(self.tab_container, app=self)
+        self.painel_produtos = PainelProdutos(self.tab_container, app=self)
         self.painel_editais = PainelEditais(self.tab_container, app=self)
         self.painel_sessao = PainelSessao(self.tab_container, app=self)
         self.painel_pncp = PainelPNCP(self.tab_container, app=self)
 
         self._paineis["📊  Dashboard"] = self.painel_dashboard
+        self._paineis["🛠️  Serviços & Field Service"] = self.painel_servicos
+        self._paineis["📦  Venda de Produtos"] = self.painel_produtos
         self._paineis["📄  Editais & Custos"] = self.painel_editais
         self._paineis["⚡  Console da Sessão"] = self.painel_sessao
         self._paineis["🌐  Oportunidades PNCP"] = self.painel_pncp
