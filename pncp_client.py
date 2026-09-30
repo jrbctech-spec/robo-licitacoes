@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import re
 import uuid
+import time
+import random
 from pathlib import Path
 from enum import Enum
 from typing import Any, Optional
@@ -90,6 +92,35 @@ HEADERS_HTTP = {
 }
 
 
+def get_com_retry(client: httpx.Client, url: str, max_retries: int = 5, **kwargs) -> httpx.Response:
+    """Faz requisição GET com rate limit delay e exponential backoff."""
+    resp = None
+    for tentativa in range(max_retries):
+        # 1. Delay de 1 a 1.5 seg para respeitar rate limit básico
+        time.sleep(random.uniform(1.0, 1.5))
+        
+        try:
+            resp = client.get(url, **kwargs)
+            if resp.status_code == 429:
+                wait_time = (2 ** tentativa) + random.uniform(0, 1)
+                logger.warning(f"Rate limit (429) no PNCP. Aguardando {wait_time:.2f}s para retentar (Tentativa {tentativa+1}/{max_retries})...")
+                time.sleep(wait_time)
+                continue
+            return resp
+        except (httpx.TimeoutException, httpx.ConnectError) as exc:
+            wait_time = (2 ** tentativa) + random.uniform(0, 1)
+            logger.warning(f"Timeout/Erro de conexão no PNCP: {exc}. Aguardando {wait_time:.2f}s (Tentativa {tentativa+1}/{max_retries})...")
+            time.sleep(wait_time)
+            if tentativa == max_retries - 1:
+                raise
+    
+    # Se esgotar as tentativas com 429, levanta erro ou retorna a última resposta (429)
+    if resp is not None:
+        resp.raise_for_status()
+        return resp
+    raise httpx.HTTPError(f"Falha após {max_retries} tentativas na URL {url}")
+
+
 def extrair_params_pncp(url_ou_texto: str) -> tuple[str, str, str]:
     """
     Extrai (cnpj_orgao, ano, sequencial) de uma URL do PNCP ou string formatada.
@@ -120,8 +151,8 @@ def buscar_compra(cnpj_orgao: str, ano: str, sequencial: str) -> dict[str, Any]:
     logger.info(f"PNCP buscar_compra: {url}")
 
     try:
-        with httpx.Client(timeout=15.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
-            resp = client.get(url)
+        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+            resp = get_com_retry(client, url)
             if resp.status_code == 404:
                 logger.warning(f"Compra não encontrada (404): {url}")
                 raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial}")
@@ -146,8 +177,8 @@ def obter_itens_compra(cnpj_orgao: str, ano: str, sequencial: str) -> list[dict[
     logger.info(f"PNCP obter_itens_compra: {url}")
     
     try:
-        with httpx.Client(timeout=15.0, headers=HEADERS_HTTP) as client:
-            resp = client.get(url)
+        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
+            resp = get_com_retry(client, url)
             if resp.status_code == 200:
                 data = resp.json()
                 if isinstance(data, list):
@@ -178,8 +209,8 @@ def obter_arquivos_edital(
     logger.info(f"PNCP obter_arquivos_edital: {url}")
 
     try:
-        with httpx.Client(timeout=15.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
-            resp = client.get(url)
+        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+            resp = get_com_retry(client, url)
             if resp.status_code == 404:
                 # Endpoint não existe ou licitação encerrada sem arquivos
                 logger.warning(
@@ -220,7 +251,7 @@ def obter_arquivos_edital(
                 nome_limpo = re.sub(r"[^\w\-.]", "_", titulo)
                 caminho_local = pasta / f"pncp_{cnpj_orgao}_{ano}_{sequencial}_{nome_limpo}"
                 try:
-                    r = client.get(url_dl)
+                    r = get_com_retry(client, url_dl)
                     r.raise_for_status()
                     caminho_local.write_bytes(r.content)
                     caminhos_baixados.append(str(caminho_local))
@@ -313,7 +344,7 @@ def buscar_licitacoes_propostas_pncp(
 
     logger.info(f"PNCP buscar_licitacoes_propostas_pncp: UF={uf}, dataFinal={data_final}")
     with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
-        resp = client.get(url, params=params)
+        resp = get_com_retry(client, url, params=params)
         resp.raise_for_status()
         return resp.json()
 
@@ -356,7 +387,7 @@ def buscar_publicacoes_pncp(
     todos_itens: list[dict[str, Any]] = []
     total_encontrados = 0
 
-    with httpx.Client(timeout=12.0, headers=HEADERS_HTTP) as client:
+    with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
         for mod in modalidades_para_consultar:
             params: dict[str, Any] = {
                 "dataInicial": data_inicial,
@@ -369,7 +400,7 @@ def buscar_publicacoes_pncp(
                 params["uf"] = uf.strip().upper()
 
             try:
-                resp = client.get(url, params=params)
+                resp = get_com_retry(client, url, params=params)
                 if resp.status_code == 200:
                     data_json = resp.json()
                     itens = data_json.get("data", [])

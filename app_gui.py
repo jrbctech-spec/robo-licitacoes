@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Optional, Dict, List
 
@@ -24,6 +25,15 @@ import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
 
 import csv
+import re
+
+from supabase import create_client
+try:
+    SUPABASE_URL = "https://szphoxostihnpcovyzvx.supabase.co"
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "SUA_CHAVE_SUPABASE")
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+except Exception as e:
+    logging.warning(f"Não foi possível inicializar o cliente Supabase globalmente: {e}")
 
 try:
     import pandas as pd
@@ -44,6 +54,7 @@ try:
         MotorDecisao,
         PrecificacaoItem,
         TipoItemEnum,
+        TipoIntervalo,
         RegraItem,
     )
     from edital_parser import (
@@ -52,7 +63,7 @@ try:
         ResultadoEdital,
         SeveridadeRisco,
     )
-    from browser_bot import BrowserBot
+    from browser_bot import BrowserBot, abrir_login_nativo
     from pncp_client import (
         carregar_certame_pncp,
         extrair_params_pncp,
@@ -93,6 +104,7 @@ COR = {
     "blue_accent": "#4FACFE",
     "green_success": "#00E676",
     "amber_warning": "#FFB300",
+    "orange_warning": "#FF9800",
     "red_danger": "#FF5252",
     "purple_accent": "#7C4DFF",
     "text_primary": "#F8FAFC",
@@ -238,6 +250,48 @@ def parsear_planilha_processo(caminho_arquivo: str | Path) -> ResultadoEdital:
                 except (ValueError, TypeError):
                     pass
 
+        # Custo real / Custo unitário
+        custo_val = None
+        for col_name in ("custo", "custo_real", "custo_unitario", "custo_base", "custo_estimado", "custo_aquisicao"):
+            if col_name in row_norm and row_norm[col_name] is not None:
+                try:
+                    raw_val = row_norm[col_name]
+                    if isinstance(raw_val, (int, float)):
+                        val_c = float(raw_val)
+                    else:
+                        val_str = str(raw_val).replace("R$", "").strip()
+                        if "," in val_str and "." in val_str:
+                            val_str = val_str.replace(".", "").replace(",", ".")
+                        elif "," in val_str:
+                            val_str = val_str.replace(",", ".")
+                        val_c = float(val_str)
+                    if val_c > 0:
+                        custo_val = val_c
+                        break
+                except (ValueError, TypeError):
+                    pass
+
+        # Piso / Stop-Loss / Preço Mínimo
+        piso_val = None
+        for col_name in ("piso", "stop_loss", "stoploss", "preco_minimo", "piso_seguranca", "lance_minimo", "piso_preco"):
+            if col_name in row_norm and row_norm[col_name] is not None:
+                try:
+                    raw_val = row_norm[col_name]
+                    if isinstance(raw_val, (int, float)):
+                        val_p = float(raw_val)
+                    else:
+                        val_str = str(raw_val).replace("R$", "").strip()
+                        if "," in val_str and "." in val_str:
+                            val_str = val_str.replace(".", "").replace(",", ".")
+                        elif "," in val_str:
+                            val_str = val_str.replace(",", ".")
+                        val_p = float(val_str)
+                    if val_p > 0:
+                        piso_val = val_p
+                        break
+                except (ValueError, TypeError):
+                    pass
+
         # Tipo de item (Produto ou Serviço)
         tipo_str = "PRODUTO"
         for col_name in ("tipo", "tipo_item", "categoria"):
@@ -257,6 +311,8 @@ def parsear_planilha_processo(caminho_arquivo: str | Path) -> ResultadoEdital:
             quantidade=qtd,
             valor_referencia=val_ref,
             tipo_item=tipo_str.lower(),
+            custo_real=custo_val,
+            piso_preco=piso_val,
         )
         itens_extraidos.append(item_e)
 
@@ -289,6 +345,38 @@ def eh_edital_pdf_valido(caminho_pdf: str) -> bool:
     except Exception:
         # Se falhar a leitura rápida, aceita tentar para não ignorar falso negativo
         return True
+
+
+def sugerir_url_disputa(res: ResultadoEdital, chave: str = "") -> str:
+    """Gera a URL direta da sala de disputa do Compras.gov.br a partir dos dados do certame."""
+    texto_busca = f"{chave} {res.numero_pregao} {res.numero_uasg} {res.caminho_pdf}"
+
+    # 1. Procura código de compra de 16 ou 17 dígitos (ex: 92677406000052026)
+    m_compra = re.search(r"\b(\d{16,17})\b", texto_busca)
+    if m_compra:
+        return f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra={m_compra.group(1)}"
+
+    # 2. Padrão CRQ12 / Dispensa 5 / 2026 (UASG 926774 do CRQ-12)
+    if "926774" in texto_busca or "crq" in texto_busca.lower() or "crq12" in texto_busca.lower():
+        m_disp = re.search(r"(\d+)[\-_/]+(\d{4})", texto_busca)
+        num = str(int(m_disp.group(1))).zfill(5) if m_disp else "00005"
+        ano = m_disp.group(2) if m_disp else "2026"
+        return f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra=92677406{num}{ano}"
+
+    # 3. Procura UASG explícita (5-6 dígitos) + Modalidade + Número + Ano
+    m_full = re.search(
+        r"(?:uasg\s*[:\-–]?\s*)(\d{5,6})[\s\-_]*(?:dispensa|pregao|concorrencia|disp|pe)?[\s\-_]*(\d+)[\s\-_/]+(\d{4})",
+        texto_busca,
+        re.IGNORECASE,
+    )
+    if m_full:
+        uasg = m_full.group(1).zfill(6)
+        mod_cod = "06" if "disp" in texto_busca.lower() else "05"
+        num = str(int(m_full.group(2))).zfill(5)
+        ano = m_full.group(3)
+        return f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra={uasg}{mod_cod}{num}{ano}"
+
+    return "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa"
 
 
 class CardFrame(ctk.CTkFrame):
@@ -355,6 +443,7 @@ class PainelDashboard(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
         self._build()
+        self.carregar_dados_dashboard()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -431,10 +520,53 @@ class PainelDashboard(ctk.CTkFrame):
             pregao_str = f"Pregão {res.numero_pregao or 'S/N'}"
             if res.numero_uasg:
                 pregao_str += f" (UASG {res.numero_uasg})"
-            orgao_str = res.orgao_comprador or res.objeto_licitacao[:50] or "Órgão Não Informado"
+            orgao_str = getattr(res, 'orgao_comprador', getattr(res, 'orgao', 'Órgão Não Informado'))
+            objeto_str = getattr(res, 'objeto_licitacao', getattr(res, 'objeto', 'Sem descrição'))
+            descricao_exibicao = orgao_str if orgao_str != "Órgão Não Informado" else objeto_str
             qtd_itens = len(res.itens)
 
-            self.tree_lics.insert("", "end", values=(pregao_str, orgao_str[:50], qtd_itens, "PRONTO"))
+            self.tree_lics.insert("", "end", values=(pregao_str, descricao_exibicao[:50], qtd_itens, "PRONTO"))
+
+    def carregar_dados_dashboard(self) -> None:
+        """Busca licitações salvas no Supabase e popula a tabela no Dashboard."""
+        try:
+            resposta = supabase.table("licitacoes")\
+                .select("*")\
+                .order("criado_em", desc=True)\
+                .limit(50)\
+                .execute()
+                
+            licitacoes = resposta.data or []
+            
+            for r in self.tree_lics.get_children():
+                self.tree_lics.delete(r)
+            
+            total_hoje = 0
+            participando = 0
+            
+            for lic in licitacoes:
+                numero = lic.get("numero_controle_pncp") or lic.get("id") or "N/D"
+                orgao_nome = lic.get("orgao_nome") or ""
+                orgao = f"{lic.get('uf', '')} - {orgao_nome[:35]}..."
+                status = lic.get("status_analise", "Pendente")
+                itens_count = lic.get("qtd_itens", 1)
+                
+                self.tree_lics.insert("", "end", values=(
+                    numero,
+                    orgao,
+                    itens_count,
+                    status.upper()
+                ))
+                
+                total_hoje += 1
+                if status.lower() in ["proposta_enviada", "em_disputa", "ativo"]:
+                    participando += 1
+                    
+            self.card_lics_ativas.atualizar(str(total_hoje))
+            self.card_liderando.atualizar(str(participando))
+            
+        except Exception as e:
+            logging.error(f"Erro ao carregar dados do Supabase no Dashboard: {e}")
 
 
 # ─── PAINEL 2: EDITAIS & CUSTOS (MULTI-CERTAME) ────────────────────────────────
@@ -527,10 +659,52 @@ class PainelEditais(ctk.CTkFrame):
         self.tree_itens.column("piso", width=110, anchor="e")
         self.tree_itens.column("prop_inicial", width=110, anchor="e")
         self.tree_itens.grid(row=0, column=0, sticky="nsew")
+        self.tree_itens.bind("<Double-1>", self._on_editar_item_custo)
 
         sb = ctk.CTkScrollbar(tbl_f, orientation="vertical", command=self.tree_itens.yview)
         self.tree_itens.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
+
+        lbl_hint = ctk.CTkLabel(
+            card_itens,
+            text="💡 Dica: Dê um duplo-clique em qualquer linha para ajustar o Custo Real ou definir o Stop-Loss (Preço Mínimo).",
+            font=ctk.CTkFont(size=11, slant="italic"),
+            text_color=COR["cyan_primary"],
+        )
+        lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+
+    def _on_editar_item_custo(self, event: Any) -> None:
+        selected = self.tree_itens.selection()
+        if not selected:
+            return
+        item_vals = self.tree_itens.item(selected[0])["values"]
+        num_item = int(item_vals[0])
+
+        certame_atual = self.app.certame_selecionado
+        if not certame_atual or certame_atual not in self.app.catalogo_licitacoes:
+            return
+        res = self.app.catalogo_licitacoes[certame_atual]
+        item_obj = next((it for it in res.itens if it.numero_item == num_item), None)
+        if not item_obj:
+            return
+
+        from tkinter import simpledialog
+        padrao_sug = item_obj.piso_preco or (item_obj.custo_real * 1.15 if item_obj.custo_real else (item_obj.valor_referencia * 0.60 if item_obj.valor_referencia else 100.0))
+        novo_piso = simpledialog.askfloat(
+            "Configurar Stop-Loss do Item",
+            f"Item {num_item}: {item_obj.descricao[:50]}...\n\n"
+            f"Preço de Referência: R$ {item_obj.valor_referencia or 0.0:,.2f}\n"
+            f"Custo Atual Cadastrado: R$ {item_obj.custo_real or 0.0:,.2f}\n\n"
+            "Digite o novo valor MÍNIMO de venda / STOP-LOSS (R$):\n(O robô NUNCA dará lance abaixo deste valor)",
+            initialvalue=round(padrao_sug, 2),
+            minvalue=0.01,
+        )
+        if novo_piso is not None:
+            item_obj.piso_preco = float(novo_piso)
+            self._exibir_certame(certame_atual)
+            if hasattr(self.app, "painel_sessao"):
+                self.app.painel_sessao.atualizar_tabela_inicial()
+            messagebox.showinfo("Stop-Loss Atualizado", f"Item {num_item}: Stop-Loss definido com sucesso para R$ {novo_piso:,.2f}")
 
     def _selecionar_pasta_processos(self) -> None:
         atual = self.txt_pasta_processos.get().strip()
@@ -549,24 +723,27 @@ class PainelEditais(ctk.CTkFrame):
 
         def _worker():
             try:
-                encontrados = []
-                # Varre subpastas e raiz procurando por planilhas .xlsx e .csv
-                for root, _, files in os.walk(folder):
-                    for f in files:
-                        if f.lower().endswith((".xlsx", ".csv")) and not f.startswith("~$"):
-                            encontrados.append(os.path.join(root, f))
+                encontrados: list[Path] = []
+                p_folder = Path(folder)
+                # Busca recursiva (rglob) por arquivos .xlsx e .csv
+                for ext in ("*.xlsx", "*.csv", "*.xls"):
+                    for file_p in p_folder.rglob(ext):
+                        if not file_p.name.startswith("~$") and not file_p.name.startswith("."):
+                            encontrados.append(file_p)
 
+                adicionados = 0
                 for file_path in encontrados:
                     res = parsear_planilha_processo(file_path)
                     if res and res.itens:
-                        nome_c = f"Certame {res.numero_pregao or Path(file_path).stem} - {Path(file_path).name}"
+                        nome_c = f"Certame {res.numero_pregao or file_path.stem} - {file_path.name}"
                         self.after(0, lambda n=nome_c, r=res: self.app.adicionar_licitacao(n, r))
+                        adicionados += 1
 
-                if encontrados:
-                    msg = f"✅ Varredura concluída! {len(encontrados)} planilha(s) de processo identificada(s)."
+                if adicionados > 0:
+                    msg = f"✅ Varredura concluída! {adicionados} planilha(s) de processo identificada(s) e adicionadas ao catálogo."
                     self.after(0, lambda: messagebox.showinfo("Lista de Processos Atualizada", msg))
                 else:
-                    self.after(0, lambda: messagebox.showinfo("Processos", "Nenhuma planilha (.xlsx ou .csv) encontrada na pasta de processos."))
+                    self.after(0, lambda: messagebox.showinfo("Processos", "Nenhuma planilha (.xlsx ou .csv) válida encontrada na pasta de processos."))
             except Exception as exc:
                 self.after(0, lambda: messagebox.showerror("Erro ao Escanear Pasta", str(exc)))
 
@@ -578,7 +755,7 @@ class PainelEditais(ctk.CTkFrame):
         path = filedialog.askopenfilename(
             title="Selecionar Planilha Excel do Certame",
             initialdir=initial,
-            filetypes=[("Planilhas Excel/CSV", "*.xlsx;*.csv"), ("Arquivos Excel", "*.xlsx"), ("Arquivos CSV", "*.csv"), ("Todos os arquivos", "*.*")]
+            filetypes=[("Planilhas Excel/CSV", "*.xlsx *.csv"), ("Todos os arquivos", "*.*")]
         )
         if not path:
             return
@@ -628,8 +805,13 @@ class PainelEditais(ctk.CTkFrame):
             val_ref_str = f"R$ {item.valor_referencia:,.2f}" if item.valor_referencia else "N/A"
 
             # Custo real e tipo de item
-            custo_base = item.valor_referencia * 0.70 if item.valor_referencia else 100.0
             tipo_enum = TipoItemEnum.SERVICO if (item.tipo_item and "serv" in item.tipo_item.lower()) else TipoItemEnum.PRODUTO
+            if item.custo_real and item.custo_real > 0:
+                custo_base = item.custo_real
+            elif item.valor_referencia and item.valor_referencia > 0:
+                custo_base = round(item.valor_referencia * (0.50 if tipo_enum == TipoItemEnum.SERVICO else 0.65), 2)
+            else:
+                custo_base = 100.0
 
             prec = PrecificacaoItem(
                 tipo_item=tipo_enum,
@@ -637,8 +819,11 @@ class PainelEditais(ctk.CTkFrame):
                 valor_referencia_edital=item.valor_referencia
             )
 
-            piso_str = f"R$ {prec.piso_seguranca:,.2f}"
+            piso_calc = item.piso_preco if (item.piso_preco and item.piso_preco > 0) else prec.piso_seguranca
+            piso_str = f"R$ {piso_calc:,.2f}"
             prop_inicial = prec.preco_abertura
+            if prop_inicial <= piso_calc:
+                prop_inicial = round(piso_calc * 1.10, 2)
             prop_str = f"R$ {prop_inicial:,.2f}"
             margem_str = f"{prec.margem_liquida_minima_percentual:.1f}%"
 
@@ -668,6 +853,22 @@ class PainelEditais(ctk.CTkFrame):
             messagebox.showinfo("Removido", f"Licitação '{certame}' removida do catálogo atual.")
 
 
+# ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
+class TkinterLogHandler(logging.Handler):
+    """Encaminha mensagens de log do Python diretamente para a caixa de log do PainelSessao."""
+    def __init__(self, painel_sessao: PainelSessao) -> None:
+        super().__init__()
+        self.painel = painel_sessao
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            if self.painel and hasattr(self.painel, "log"):
+                self.painel.after(0, lambda m=msg: self.painel.log(m))
+        except Exception:
+            pass
+
+
 # ─── PAINEL 3: CONSOLE DA SESSÃO AO VIVO ──────────────────────────────────────
 class PainelSessao(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
@@ -675,7 +876,18 @@ class PainelSessao(ctk.CTkFrame):
         self.app = app
         self._bot: Optional[BrowserBot] = None
         self._motor: Optional[MotorDecisao] = None
+        self._thread_bot: Optional[threading.Thread] = None
+        self._item_rows: dict[int, str] = {}  # Mapeia numero_item -> item_id no Treeview
         self._build()
+        self._setup_logging()
+
+    def _setup_logging(self) -> None:
+        handler = TkinterLogHandler(self)
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        logger_bot = logging.getLogger("browser_bot")
+        logger_bot.addHandler(handler)
+        logger_engine = logging.getLogger("engine")
+        logger_engine.addHandler(handler)
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -687,43 +899,128 @@ class PainelSessao(ctk.CTkFrame):
         card_ctrl.grid_columnconfigure(0, weight=1)
 
         ctrl_top = ctk.CTkFrame(card_ctrl, fg_color="transparent")
-        ctrl_top.grid(row=0, column=0, sticky="ew", padx=16, pady=12)
+        ctrl_top.grid(row=0, column=0, sticky="ew", padx=16, pady=10)
         ctrl_top.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(ctrl_top, text="🚀  Console de Disputa de Lances ao Vivo", font=ctk.CTkFont(size=15, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            ctrl_top,
+            text="🚀  Console de Disputa de Lances ao Vivo",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            text_color=COR["text_primary"],
+        ).grid(row=0, column=0, sticky="w")
 
         # Seletor do Pregão para Disputa
-        ctk.CTkLabel(ctrl_top, text="Disputar Licitação:", font=ctk.CTkFont(size=12, weight="bold"), text_color=COR["cyan_primary"]).grid(row=0, column=1, padx=(16, 4), sticky="e")
-        self.cmb_disputa = ctk.CTkOptionMenu(ctrl_top, values=["(Nenhum pregão)"], width=220)
+        ctk.CTkLabel(
+            ctrl_top,
+            text="Disputar Licitação:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COR["cyan_primary"],
+        ).grid(row=0, column=1, padx=(16, 4), sticky="e")
+
+        self.cmb_disputa = ctk.CTkOptionMenu(
+            ctrl_top,
+            values=["(Nenhum pregão)"],
+            width=260,
+            command=self._on_disputa_mudou,
+        )
         self.cmb_disputa.grid(row=0, column=2, padx=4, sticky="e")
 
         # Switch Simulação vs Real
-        self.sw_modo = ctk.CTkSwitch(ctrl_top, text="Modo Simulação (Dry-Run)", font=ctk.CTkFont(weight="bold"), progress_color=COR["green_success"])
+        self.sw_modo = ctk.CTkSwitch(
+            ctrl_top,
+            text="Modo Simulação (Dry-Run)",
+            font=ctk.CTkFont(weight="bold"),
+            progress_color=COR["green_success"],
+            command=self._on_modo_switch,
+        )
         self.sw_modo.select()
         self.sw_modo.grid(row=0, column=3, padx=(16, 0), sticky="e")
 
+        # Linha de URL do Comprasnet e Botões de Ação
         ctrl_actions = ctk.CTkFrame(card_ctrl, fg_color="transparent")
-        ctrl_actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 12))
+        ctrl_actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+        ctrl_actions.grid_columnconfigure(1, weight=1)
 
-        self.btn_iniciar = ctk.CTkButton(ctrl_actions, text="▶️  Iniciar Disputa", font=ctk.CTkFont(weight="bold"), fg_color=COR["green_success"], text_color="#000000", height=38, command=self._iniciar_sessao)
-        self.btn_iniciar.pack(side="left", padx=(0, 8))
+        ctk.CTkLabel(
+            ctrl_actions,
+            text="🌐 Sala de Disputa / URL:",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            text_color=COR["text_secondary"],
+        ).grid(row=0, column=0, padx=(0, 6), sticky="w")
 
-        self.btn_parar = ctk.CTkButton(ctrl_actions, text="⏹️  Parar Disputa", font=ctk.CTkFont(weight="bold"), fg_color=COR["red_danger"], text_color="#FFFFFF", height=38, command=self._parar_sessao)
-        self.btn_parar.pack(side="left", padx=4)
+        self.txt_url = ctk.CTkEntry(
+            ctrl_actions,
+            placeholder_text="https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login",
+            font=ctk.CTkFont(size=11),
+        )
+        self.txt_url.insert(0, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login")
+        self.txt_url.grid(row=0, column=1, padx=6, sticky="ew")
+
+        self.btn_login_nativo = ctk.CTkButton(
+            ctrl_actions,
+            text="🔑 Login Gov.br",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["orange_warning"],
+            text_color="#000000",
+            height=34,
+            width=115,
+            command=self._fazer_login_nativo,
+        )
+        self.btn_login_nativo.grid(row=0, column=2, padx=(6, 4), sticky="e")
+
+        self.btn_abrir_url = ctk.CTkButton(
+            ctrl_actions,
+            text="🌐 Abrir Sala",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["blue_accent"],
+            text_color="#FFFFFF",
+            height=34,
+            width=95,
+            command=self._navegar_manual,
+        )
+        self.btn_abrir_url.grid(row=0, column=3, padx=4, sticky="e")
+
+        self.btn_iniciar = ctk.CTkButton(
+            ctrl_actions,
+            text="▶️  Iniciar Disputa",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color=COR["green_success"],
+            text_color="#000000",
+            height=34,
+            command=self._iniciar_sessao,
+        )
+        self.btn_iniciar.grid(row=0, column=4, padx=4, sticky="e")
+
+        self.btn_parar = ctk.CTkButton(
+            ctrl_actions,
+            text="⏹️  Parar Disputa",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color=COR["red_danger"],
+            text_color="#FFFFFF",
+            height=34,
+            state="disabled",
+            command=self._parar_sessao,
+        )
+        self.btn_parar.grid(row=0, column=5, padx=4, sticky="e")
 
         # Monitor de Itens na Disputa
         card_monitor = CardFrame(self)
         card_monitor.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 10))
         card_monitor.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(card_monitor, text="📊  Status dos Itens na Disputa", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
+        ctk.CTkLabel(
+            card_monitor,
+            text="📊  Status dos Itens na Disputa",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COR["text_primary"],
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
 
         tbl_f = ctk.CTkFrame(card_monitor, fg_color="transparent")
         tbl_f.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
         tbl_f.grid_columnconfigure(0, weight=1)
 
         cols = ("num", "desc", "meu_lance", "menor_lance", "posicao", "status_pill")
-        self.tree_sessao = ttk.Treeview(tbl_f, columns=cols, show="headings", height=5)
+        self.tree_sessao = ttk.Treeview(tbl_f, columns=cols, show="headings", height=6)
         self.tree_sessao.heading("num", text="Item")
         self.tree_sessao.heading("desc", text="Descrição do Produto/Serviço")
         self.tree_sessao.heading("meu_lance", text="Meu Último Lance")
@@ -732,11 +1029,11 @@ class PainelSessao(ctk.CTkFrame):
         self.tree_sessao.heading("status_pill", text="Status na Disputa")
 
         self.tree_sessao.column("num", width=50, anchor="center")
-        self.tree_sessao.column("desc", width=300, anchor="w")
-        self.tree_sessao.column("meu_lance", width=120, anchor="e")
-        self.tree_sessao.column("menor_lance", width=120, anchor="e")
+        self.tree_sessao.column("desc", width=320, anchor="w")
+        self.tree_sessao.column("meu_lance", width=130, anchor="e")
+        self.tree_sessao.column("menor_lance", width=130, anchor="e")
         self.tree_sessao.column("posicao", width=80, anchor="center")
-        self.tree_sessao.column("status_pill", width=140, anchor="center")
+        self.tree_sessao.column("status_pill", width=150, anchor="center")
         self.tree_sessao.pack(fill="x", expand=True)
 
         # Terminal Log Stream
@@ -745,40 +1042,287 @@ class PainelSessao(ctk.CTkFrame):
         card_log.grid_rowconfigure(1, weight=1)
         card_log.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(card_log, text="📜  Log de Eventos & Auditoria da Disputa", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
+        log_header = ctk.CTkFrame(card_log, fg_color="transparent")
+        log_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(8, 2))
+        log_header.grid_columnconfigure(0, weight=1)
 
-        self.txt_log = ctk.CTkTextbox(card_log, font=ctk.CTkFont(family="Consolas", size=11), fg_color=COR["bg_dark"], text_color=COR["text_primary"])
+        ctk.CTkLabel(
+            log_header,
+            text="📜  Log de Eventos & Auditoria da Disputa",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COR["text_primary"],
+        ).grid(row=0, column=0, sticky="w")
+
+        ctk.CTkButton(
+            log_header,
+            text="Limpar Log",
+            width=80,
+            height=24,
+            fg_color=COR["bg_card_hover"],
+            font=ctk.CTkFont(size=10),
+            command=self._limpar_log,
+        ).grid(row=0, column=1, sticky="e")
+
+        self.txt_log = ctk.CTkTextbox(
+            card_log,
+            font=ctk.CTkFont(family="Consolas", size=11),
+            fg_color=COR["bg_dark"],
+            text_color=COR["text_primary"],
+        )
         self.txt_log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+    def _on_modo_switch(self) -> None:
+        dry_run = bool(self.sw_modo.get())
+        if dry_run:
+            self.sw_modo.configure(text="Modo Simulação (Dry-Run)", progress_color=COR["green_success"])
+        else:
+            self.sw_modo.configure(text="⚠️ MODO REAL (Envio de Lances)", progress_color=COR["red_danger"])
+
+    def _on_disputa_mudou(self, escolha: str) -> None:
+        self.atualizar_tabela_inicial()
 
     def atualizar_seletor_disputa(self) -> None:
         cat = self.app.catalogo_licitacoes
         if not cat:
             self.cmb_disputa.configure(values=["(Nenhum pregão)"])
             self.cmb_disputa.set("(Nenhum pregão)")
+            self.atualizar_tabela_inicial()
             return
+
         chaves = list(cat.keys())
         self.cmb_disputa.configure(values=chaves)
-        self.cmb_disputa.set(chaves[0])
+        selecionado = self.app.certame_selecionado or chaves[0]
+        self.cmb_disputa.set(selecionado)
+        self.atualizar_tabela_inicial()
+
+    def atualizar_tabela_inicial(self) -> None:
+        """Preenche a tabela da disputa com os itens do certame selecionado em estado aguardando."""
+        for r in self.tree_sessao.get_children():
+            self.tree_sessao.delete(r)
+        self._item_rows.clear()
+
+        pregao = self.cmb_disputa.get()
+        if not pregao or pregao == "(Nenhum pregão)" or pregao not in self.app.catalogo_licitacoes:
+            return
+
+        res = self.app.catalogo_licitacoes[pregao]
+
+        # Auto-preenche a URL direta da sala de disputa
+        url_sug = sugerir_url_disputa(res, pregao)
+        if url_sug and hasattr(self, "txt_url"):
+            self.txt_url.delete(0, "end")
+            self.txt_url.insert(0, url_sug)
+
+        for it in res.itens:
+            v_ref_str = f"R$ {it.valor_referencia:,.2f}" if it.valor_referencia else "—"
+            row_id = self.tree_sessao.insert(
+                "",
+                "end",
+                values=(
+                    it.numero_item,
+                    it.descricao[:80],
+                    "—",
+                    v_ref_str,
+                    "—",
+                    "⏳ AGUARDANDO",
+                ),
+            )
+            self._item_rows[it.numero_item] = row_id
 
     def _iniciar_sessao(self) -> None:
         pregao = self.cmb_disputa.get()
-        if not pregao or pregao == "(Nenhum pregão)":
-            messagebox.showwarning("Selecione um Pregão", "Carregue ou selecione um pregão válido na aba 'Editais & Custos' antes de iniciar a disputa.")
+        if not pregao or pregao == "(Nenhum pregão)" or pregao not in self.app.catalogo_licitacoes:
+            messagebox.showwarning(
+                "Selecione um Pregão",
+                "Carregue ou selecione um pregão válido na aba 'Editais & Custos' antes de iniciar a disputa.",
+            )
+            return
+
+        res = self.app.catalogo_licitacoes[pregao]
+        if not res.itens:
+            messagebox.showwarning(
+                "Certame Sem Itens",
+                "O certame selecionado não possui itens válidos para disputa.",
+            )
             return
 
         dry_run = bool(self.sw_modo.get())
-        msg_modo = "SIMULAÇÃO (Dry-Run)" if dry_run else "🔴 DISPUTA REAL (Envio de Lances)"
-        self.log(f"🚀 Iniciando bot para: {pregao} [Modo: {msg_modo}]")
-        messagebox.showinfo("Disputa Iniciada", f"Bot iniciado para {pregao} em modo {msg_modo}!")
+        if not dry_run:
+            confirma = messagebox.askyesno(
+                "⚠️ CONFIRMAÇÃO DE MODO REAL",
+                "ATENÇÃO: O modo REAL está ativado!\n\n"
+                "Lances REAIS serão enviados ao Compras.gov.br com valor legal e financeiro.\n"
+                "Certifique-se de que todos os custos e stop-losses estão corretos.\n\n"
+                "Deseja realmente iniciar a disputa em MODO REAL?",
+                icon="warning",
+            )
+            if not confirma:
+                self.log("⚠️ Inicialização em modo real cancelada pelo operador.")
+                return
+
+        # Monta a lista de RegraItem
+        regras: list[RegraItem] = []
+        for item in res.itens:
+            tipo_enum = TipoItemEnum.SERVICO if (item.tipo_item and "serv" in item.tipo_item.lower()) else TipoItemEnum.PRODUTO
+            if item.custo_real and item.custo_real > 0:
+                custo_base = item.custo_real
+            elif item.valor_referencia and item.valor_referencia > 0:
+                custo_base = round(item.valor_referencia * (0.50 if tipo_enum == TipoItemEnum.SERVICO else 0.65), 2)
+            else:
+                custo_base = 100.0
+
+            prec = PrecificacaoItem(
+                tipo_item=tipo_enum,
+                custo_base=custo_base,
+                valor_referencia_edital=item.valor_referencia,
+            )
+
+            piso_calc = item.piso_preco if (item.piso_preco and item.piso_preco > 0) else prec.piso_seguranca
+            preco_ini = prec.preco_abertura
+            if preco_ini <= piso_calc:
+                preco_ini = round(piso_calc * 1.10, 2)
+
+            regras.append(
+                RegraItem(
+                    item_id=str(uuid.uuid4()),
+                    numero_item=item.numero_item,
+                    descricao=item.descricao,
+                    custo_unitario=prec.custo_total,
+                    margem_minima_percent=prec.margem_liquida_minima_percentual,
+                    preco_minimo=piso_calc,
+                    preco_inicial_proposta=preco_ini,
+                    intervalo_minimo=item.decremento_minimo or 0.01,
+                    tipo_intervalo=TipoIntervalo.MONETARIO,
+                    valor_referencia=item.valor_referencia,
+                    licitacao_id=res.numero_pregao or "0",
+                )
+            )
+
+        sessao_id = str(uuid.uuid4())
+        url_alvo = self.txt_url.get().strip() or "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login"
+
+        try:
+            self._motor = MotorDecisao(dry_run=dry_run)
+            self._motor.carregar_regras(regras)
+            self._motor.iniciar_sessao()
+
+            self._bot = BrowserBot(
+                motor=self._motor,
+                sessao_id=sessao_id,
+                licitacao_id=res.numero_pregao,
+                callback_ciclo=self._on_ciclo_update,
+            )
+        except Exception as exc:
+            messagebox.showerror("Erro ao Configurar Robô", f"Falha ao inicializar motor: {exc}")
+            return
+
+        self.btn_iniciar.configure(state="disabled")
+        self.btn_parar.configure(state="normal")
+
+        msg_modo = "🛡️ SIMULAÇÃO (Dry-Run)" if dry_run else "🔴 DISPUTA REAL (Envio de Lances)"
+        self.log(f"🚀 Iniciando robô para '{pregao}' | {msg_modo}")
+        self.log(f"   Sessão ID: {sessao_id[:13]}... | {len(regras)} itens carregados | URL: {url_alvo}")
+
+        def _worker():
+            try:
+                if self._bot:
+                    self._bot.iniciar(url_pregao=url_alvo, intervalo_polling_s=5.0)
+            except Exception as exc_bot:
+                logger.exception("Erro crítico durante a execução do robô")
+                self.after(0, lambda: self.log(f"❌ Erro crítico no robô: {exc_bot}"))
+            finally:
+                self.after(0, self._on_bot_finalizado)
+
+        self._thread_bot = threading.Thread(target=_worker, daemon=True)
+        self._thread_bot.start()
+
+    def _fazer_login_nativo(self) -> None:
+        url = self.txt_url.get().strip() or "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login"
+        self.log("🔑 Abrindo Google Chrome nativo para login no Gov.br...")
+        sucesso = abrir_login_nativo(url)
+        if sucesso:
+            self.log("✅ Janela do Google Chrome aberta com o perfil do robô.")
+            self.log("💡 Realize o login normalmente por CPF, QR Code ou Banco.")
+            self.log("👉 Quando estiver autenticado, clique em '▶️ Iniciar Disputa'!")
+        else:
+            messagebox.showerror("Erro ao Abrir Navegador", "Google Chrome não encontrado no sistema.")
+
+    def _navegar_manual(self) -> None:
+        url = self.txt_url.get().strip()
+        if not url:
+            return
+        if self._bot:
+            self._bot.navegar_para(url)
+            self.log(f"🌐 Solicitada abertura manual da URL: {url}")
+        else:
+            self.log("ℹ️ Inicie a disputa com '▶️ Iniciar Disputa' para abrir o navegador.")
 
     def _parar_sessao(self) -> None:
-        self.log("⏹️ Disputa encerrada pelo operador.")
-        messagebox.showwarning("Disputa Encerrada", "Robô de lances interrompido.")
+        if self._bot:
+            self._bot.parar()
+            self.log("⏹️ Comando de parada enviado. Encerrando sessão...")
+            self.btn_parar.configure(state="disabled")
+        else:
+            self.log("⏹️ Nenhum robô ativo no momento.")
+
+    def _on_bot_finalizado(self) -> None:
+        self.btn_iniciar.configure(state="normal")
+        self.btn_parar.configure(state="disabled")
+        self.log("🏁 Sessão de monitoramento finalizada.")
+
+    def _on_ciclo_update(self, ciclo: int, estados: list[Any], decisoes: dict[int, Any]) -> None:
+        self.after(0, lambda: self._render_ciclo_ui(ciclo, estados, decisoes))
+
+    def _render_ciclo_ui(self, ciclo: int, estados: list[Any], decisoes: dict[int, Any]) -> None:
+        liderando_cnt = 0
+        piso_cnt = 0
+
+        for ep in estados:
+            num = ep.numero_item
+            dec = decisoes.get(num)
+            meu_lance = ep.nosso_ultimo_lance
+            menor_lance = ep.melhor_lance_mercado
+            pos = ep.nossa_posicao
+
+            meu_lance_str = f"R$ {meu_lance:,.2f}" if meu_lance is not None else "—"
+            menor_lance_str = f"R$ {menor_lance:,.2f}" if menor_lance is not None else "—"
+            pos_str = f"{pos}º" if pos is not None else "—"
+
+            # Determina badge de status
+            status_txt = "⏳ DISPUTANDO"
+            if dec:
+                if dec.bloqueado_stop_loss:
+                    status_txt = "🛑 STOP-LOSS"
+                    piso_cnt += 1
+                elif dec.deve_dar_lance and dec.valor_lance is not None:
+                    status_txt = f"⚡ LANCE R$ {dec.valor_lance:,.2f}"
+                elif dec.motivo == MotivoBloqueio.JA_VENCENDO or (pos == 1):
+                    status_txt = "🏆 LIDERANDO"
+                    liderando_cnt += 1
+                elif dec.motivo == MotivoBloqueio.SUPERADO or (pos and pos > 1):
+                    status_txt = "🟡 SUPERADO"
+
+            if num in self._item_rows:
+                row_id = self._item_rows[num]
+                desc_atual = self.tree_sessao.item(row_id)["values"][1]
+                self.tree_sessao.item(
+                    row_id,
+                    values=(num, desc_atual, meu_lance_str, menor_lance_str, pos_str, status_txt),
+                )
+
+        # Atualiza métricas no Dashboard
+        if hasattr(self.app, "painel_dashboard"):
+            self.app.painel_dashboard.card_liderando.atualizar(str(liderando_cnt))
+            self.app.painel_dashboard.card_stop_loss.atualizar(str(piso_cnt))
+
+    def _limpar_log(self) -> None:
+        self.txt_log.delete("1.0", "end")
 
     def log(self, msg: str) -> None:
         t_str = time.strftime("%H:%M:%S")
         self.txt_log.insert("end", f"[{t_str}] {msg}\n")
         self.txt_log.see("end")
+
 
 
 # ─── PAINEL 4: OPORTUNIDADES PNCP ─────────────────────────────────────────────

@@ -90,6 +90,10 @@ class PrecificacaoItem(BaseModel):
         # 4. Preço de Abertura = Teto do Edital
         if self.valor_referencia_edital and self.valor_referencia_edital > 0:
             self.preco_abertura = round(self.valor_referencia_edital, 2)
+            # Proteção: se o piso de segurança ultrapassar ou igualar o teto do edital
+            if self.piso_seguranca >= self.preco_abertura:
+                self.piso_seguranca = round(self.preco_abertura * 0.85, 2)
+                self.custo_total = round(self.piso_seguranca / (1.0 + (self.margem_liquida_minima_percentual / 100.0)), 2)
         else:
             self.preco_abertura = round(self.piso_seguranca * 1.25, 2)
 
@@ -745,3 +749,205 @@ class MotorDecisao:
             "itens_ativos": len(self._regras),
             "itens_encerrados": sum(1 for e in self._estados.values() if e.encerrado),
         }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. Piloto de Disputa em Tempo Real (Operador Inteligente Compras.gov.br)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class ItemPiloto:
+    """
+    Configuração de um item para o PilotoDisputa da JRBC TECH.
+    """
+    numero_item: int
+    custo_real: float
+    preco_referencia: Optional[float] = None
+    margem_minima: float = 30.0          # 30% padrão produto / 50% serviço
+    piso_seguranca: Optional[float] = None  # Stop-loss (R$)
+    intervalo_minimo: float = 0.01          # Padrão R$ 0,01 ou R$ 5,00
+    tipo_item: TipoItemEnum = TipoItemEnum.PRODUTO
+
+    def __post_init__(self) -> None:
+        if self.custo_real <= 0:
+            raise ValueError(f"Item {self.numero_item}: custo_real deve ser > 0")
+
+        # Ajuste automático de margem mínima caso não tenha sido customizada
+        if self.tipo_item == TipoItemEnum.SERVICO and self.margem_minima == 30.0:
+            self.margem_minima = 50.0
+
+        # Cálculo do Stop-Loss caso omitido: custo_real * (1 + margem_minima/100)
+        if self.piso_seguranca is None:
+            piso_dec = Decimal(str(self.custo_real)) * (Decimal("1") + (Decimal(str(self.margem_minima)) / Decimal("100")))
+            self.piso_seguranca = float(piso_dec.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+        if self.piso_seguranca < self.custo_real:
+            raise ValueError(
+                f"Item {self.numero_item}: piso_seguranca (R$ {self.piso_seguranca:.2f}) "
+                f"não pode ser inferior ao custo_real (R$ {self.custo_real:.2f})."
+            )
+
+
+@dataclass
+class DecisaoPiloto:
+    """
+    Resultado da avaliação de lance pelo PilotoDisputa.
+    """
+    numero_item: int
+    deve_enviar: bool
+    valor_lance: Optional[float]
+    status: str                         # "LIDERANDO", "LANCE_AUTORIZADO", "STOP_LOSS", "AGUARDANDO_JANELA_FINAL"
+    motivo: str
+    melhor_mercado: Optional[float] = None
+    meu_ultimo_lance: Optional[float] = None
+    piso_seguranca: float = 0.0
+    bloqueado_stop_loss: bool = False
+
+
+class PilotoDisputa:
+    """
+    Operador inteligente para a sala de disputa do Compras.gov.br.
+    
+    Lógica de Operação:
+      1. Anti-Autocanibalização: Se melhor_valor == meu_valor -> LIDERANDO (não repete lance).
+      2. Contra-lance com decremento: Se melhor_valor < meu_valor -> novo_lance = melhor_valor - intervalo_minimo.
+      3. Stop-Loss rígido: Se novo_lance >= piso_seguranca -> LANCE_AUTORIZADO; se < piso_seguranca -> STOP_LOSS.
+      4. Timing e Proteção: Na prorrogação de 2 minutos, segura o lance até os últimos 30 segundos.
+    """
+    def __init__(self, itens: Optional[list[ItemPiloto]] = None) -> None:
+        self.itens: dict[int, ItemPiloto] = {}
+        self.meus_lances: dict[int, float] = {}
+        self.lideres_mercado: dict[int, float] = {}
+        if itens:
+            self.carregar_itens(itens)
+
+    def carregar_itens(self, itens: list[ItemPiloto]) -> None:
+        """Carrega ou substitui a lista de itens configurados."""
+        self.itens.clear()
+        for it in itens:
+            self.itens[it.numero_item] = it
+
+    def adicionar_item(self, item: ItemPiloto) -> None:
+        """Adiciona ou atualiza um item individual no piloto."""
+        self.itens[item.numero_item] = item
+
+    def registrar_lance_enviado(self, numero_item: int, valor: float) -> None:
+        """Atualiza a memória do piloto com o último lance confirmado."""
+        self.meus_lances[numero_item] = round(valor, 2)
+
+    def avaliar_lance(
+        self,
+        numero_item: int,
+        melhor_valor: Optional[float],
+        meu_valor: Optional[float] = None,
+        tempo_restante_prorrogacao_s: Optional[float] = None,
+        em_prorrogacao: bool = False,
+    ) -> DecisaoPiloto:
+        """
+        Avalia o estado da sala de disputa e calcula a decisão de lance para o item.
+        """
+        if numero_item not in self.itens:
+            raise KeyError(f"Item {numero_item} não configurado no PilotoDisputa.")
+
+        item = self.itens[numero_item]
+        meu_lance_efetivo = meu_valor if meu_valor is not None else self.meus_lances.get(numero_item)
+        if melhor_valor is not None:
+            self.lideres_mercado[numero_item] = round(melhor_valor, 2)
+
+        # 1. Sem lances concorrentes registrados
+        if melhor_valor is None:
+            if meu_lance_efetivo is not None:
+                return DecisaoPiloto(
+                    numero_item=numero_item,
+                    deve_enviar=False,
+                    valor_lance=None,
+                    status="LIDERANDO",
+                    motivo="Líder isolado (sem concorrência registrada).",
+                    melhor_mercado=None,
+                    meu_ultimo_lance=meu_lance_efetivo,
+                    piso_seguranca=item.piso_seguranca,
+                )
+            else:
+                lance_abertura = item.preco_referencia or (item.piso_seguranca * 1.25)
+                return DecisaoPiloto(
+                    numero_item=numero_item,
+                    deve_enviar=True,
+                    valor_lance=round(lance_abertura, 2),
+                    status="LANCE_AUTORIZADO",
+                    motivo="Lance inicial de abertura do certame.",
+                    melhor_mercado=None,
+                    meu_ultimo_lance=None,
+                    piso_seguranca=item.piso_seguranca,
+                )
+
+        # 2. Liderança ativa (Anti-autocanibalização)
+        if meu_lance_efetivo is not None and abs(melhor_valor - meu_lance_efetivo) < 0.001:
+            return DecisaoPiloto(
+                numero_item=numero_item,
+                deve_enviar=False,
+                valor_lance=None,
+                status="LIDERANDO",
+                motivo="Líder do item. Anti-autocanibalização ativada.",
+                melhor_mercado=melhor_valor,
+                meu_ultimo_lance=meu_lance_efetivo,
+                piso_seguranca=item.piso_seguranca,
+            )
+
+        # 3. Timing de proteção na prorrogação de 2 minutos (aguarda últimos 30 segundos)
+        if em_prorrogacao and tempo_restante_prorrogacao_s is not None:
+            if tempo_restante_prorrogacao_s > 30.0:
+                return DecisaoPiloto(
+                    numero_item=numero_item,
+                    deve_enviar=False,
+                    valor_lance=None,
+                    status="AGUARDANDO_JANELA_FINAL",
+                    motivo=(
+                        f"Prorrogação ativa: aguardando janela decisiva final "
+                        f"(faltam {tempo_restante_prorrogacao_s:.1f}s, envio aos <=30s) "
+                        f"para evitar guerra predatória de lances."
+                    ),
+                    melhor_mercado=melhor_valor,
+                    meu_ultimo_lance=meu_lance_efetivo,
+                    piso_seguranca=item.piso_seguranca,
+                )
+
+        # 4. Cálculo do Contra-lance
+        dec_melhor = Decimal(str(melhor_valor))
+        dec_intervalo = Decimal(str(item.intervalo_minimo))
+        dec_novo_lance = (dec_melhor - dec_intervalo).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        novo_lance = float(dec_novo_lance)
+
+        # 5. Validação de Stop-Loss (Preço Mínimo)
+        dec_piso = Decimal(str(item.piso_seguranca)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if dec_novo_lance < dec_piso:
+            logger.warning(
+                f"🛑 STOP-LOSS ATIVADO | Item {numero_item} | Contra-lance R$ {novo_lance:.2f} < Piso R$ {item.piso_seguranca:.2f} | Margem mínima: {item.margem_minima:.1f}%"
+            )
+            return DecisaoPiloto(
+                numero_item=numero_item,
+                deve_enviar=False,
+                valor_lance=None,
+                status="STOP_LOSS",
+                motivo=(
+                    f"STOP-LOSS atingido: próximo lance R$ {novo_lance:.2f} seria inferior "
+                    f"ao piso de segurança R$ {item.piso_seguranca:.2f} (Margem mínima: {item.margem_minima:.1f}%)."
+                ),
+                melhor_mercado=melhor_valor,
+                meu_ultimo_lance=meu_lance_efetivo,
+                piso_seguranca=item.piso_seguranca,
+                bloqueado_stop_loss=True,
+            )
+
+        # 6. Autorização de Envio
+        return DecisaoPiloto(
+            numero_item=numero_item,
+            deve_enviar=True,
+            valor_lance=novo_lance,
+            status="LANCE_AUTORIZADO",
+            motivo=f"Contra-lance calculado R$ {novo_lance:.2f} (decremento de R$ {item.intervalo_minimo:.2f} sobre menor concorrente R$ {melhor_valor:.2f}).",
+            melhor_mercado=melhor_valor,
+            meu_ultimo_lance=meu_lance_efetivo,
+            piso_seguranca=item.piso_seguranca,
+            bloqueado_stop_loss=False,
+        )
+

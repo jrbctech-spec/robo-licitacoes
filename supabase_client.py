@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -224,13 +225,25 @@ class AsyncLogQueue:
 
     @staticmethod
     def _entrada_para_dict(entrada: EntradaLog) -> dict[str, Any]:
+        lic_uuid = None
+        if entrada.licitacao_id:
+            try:
+                uuid.UUID(str(entrada.licitacao_id))
+                lic_uuid = str(entrada.licitacao_id)
+            except (ValueError, AttributeError):
+                lic_uuid = None
+
+        dados_extras = dict(entrada.dados_extras) if entrada.dados_extras else {}
+        if entrada.licitacao_id and not lic_uuid:
+            dados_extras["licitacao_ref"] = str(entrada.licitacao_id)
+
         return {
             "sessao_id": entrada.sessao_id,
             "nivel": entrada.nivel,
             "mensagem": entrada.mensagem,
             "modulo": entrada.modulo or None,
-            "licitacao_id": entrada.licitacao_id,
-            "dados_extras": entrada.dados_extras,
+            "licitacao_id": lic_uuid,
+            "dados_extras": dados_extras if dados_extras else None,
             "registrado_em": entrada.registrado_em,
         }
 
@@ -295,6 +308,7 @@ def inserir_item(dados: dict[str, Any]) -> dict[str, Any]:
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=1, min=1, max=5),
     retry=retry_if_exception_type(Exception),
+    reraise=False,
 )
 def registrar_lance(dados: dict[str, Any]) -> dict[str, Any]:
     """
@@ -306,13 +320,26 @@ def registrar_lance(dados: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Registro inserido como dicionário.
     """
-    resposta = (
-        get_client()
-        .table("historico_lances")
-        .insert(dados)
-        .execute()
-    )
-    return resposta.data[0] if resposta.data else {}
+    dados_sanitizados = dict(dados)
+    for k in ("licitacao_id", "item_id"):
+        val = dados_sanitizados.get(k)
+        if val is not None:
+            try:
+                uuid.UUID(str(val))
+            except (ValueError, AttributeError):
+                dados_sanitizados.pop(k, None)
+
+    try:
+        resposta = (
+            get_client()
+            .table("historico_lances")
+            .insert(dados_sanitizados)
+            .execute()
+        )
+        return resposta.data[0] if resposta.data else {}
+    except Exception as exc:
+        logger.warning(f"Falha ao registrar lance no Supabase: {exc}")
+        return {}
 
 
 @retry(

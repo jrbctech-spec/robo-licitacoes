@@ -7,6 +7,7 @@ supabase==2.31.0
 
 # Automação de navegador
 playwright==1.62.0
+playwright-stealth>=2.0.3
 
 # Validação de dados e configurações
 pydantic==2.13.4

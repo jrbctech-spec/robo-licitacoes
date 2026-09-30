@@ -36,11 +36,12 @@ fi
 
 # 3. Execução do Robô com repasse de parâmetros
 if [ "$1" = "--diagnostics" ]; then
-    exec "$PYTHON" main.py --diagnostics
+    exec "$PYTHON" diagnostics.py
 elif [ "$1" = "--cli" ]; then
     exec "$PYTHON" main.py --cli
-elif [ "$1" = "--gui" ]; then
+elif [ "$1" = "--gui" ] || [ -z "$1" ]; then
     exec "$PYTHON" app_gui.py
 else
-    exec "$PYTHON" main.py "$@"
+    exec "$PYTHON" app_gui.py "$@"
 fi
+
