@@ -471,8 +471,8 @@ class PainelDashboard(ctk.CTkFrame):
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
         main_content.grid(row=1, column=0, sticky="nsew")
-        main_content.grid_columnconfigure(0, weight=3)
-        main_content.grid_columnconfigure(1, weight=2)
+        main_content.grid_columnconfigure(0, weight=1)
+        main_content.grid_columnconfigure(1, weight=0, minsize=240)
         main_content.grid_rowconfigure(0, weight=1)
 
         card_lics = CardFrame(main_content)
@@ -480,34 +480,64 @@ class PainelDashboard(ctk.CTkFrame):
         card_lics.grid_rowconfigure(1, weight=1)
         card_lics.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(card_lics, text="📋  Pregões & Dispensas Ativos no Sistema", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
-
         self._criar_barra_filtros(card_lics)
 
         tbl_frame = ctk.CTkFrame(card_lics, fg_color="transparent")
-        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tbl_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
         tbl_frame.grid_columnconfigure(0, weight=1)
         tbl_frame.grid_rowconfigure(0, weight=1)
 
-        columns = ("pregao", "orgao", "valor", "status", "abertura", "link")
-        self.tree_lics = ttk.Treeview(tbl_frame, columns=columns, show="headings", height=8)
-        self.tree_lics.heading("pregao", text="Pregão / UASG")
+        style = ttk.Style()
+        style.theme_use('default')
+        style.configure('Treeview',
+            background='#181A20',
+            foreground='#FFFFFF',
+            fieldbackground='#181A20',
+            rowheight=30,
+            font=('Segoe UI', 10)
+        )
+        style.configure('Treeview.Heading',
+            background='#2B2D31',
+            foreground='#00E5FF',
+            font=('Segoe UI', 10, 'bold'),
+            relief='flat'
+        )
+        # Hack to force heading height via style layout
+        style.layout("Treeview.Heading", [
+            ("Treeview.Heading.cell", {'sticky': 'nswe'}),
+            ("Treeview.Heading.border", {'sticky':'nswe', 'children': [
+                ("Treeview.Heading.padding", {'sticky':'nswe', 'children': [
+                    ("Treeview.Heading.image", {'side':'right', 'sticky':''}),
+                    ("Treeview.Heading.text", {'sticky':'we'})
+                ]})
+            ]})
+        ])
+        style.configure("Treeview.Heading", padding=(0, 8)) # effectively ~32px height
+        style.map('Treeview.Heading', background=[('active', '#383A40')])
+        style.map('Treeview',
+            background=[('selected', '#2563EB')],
+            foreground=[('selected', '#FFFFFF')]
+        )
+
+        columns = ("uf", "pregao", "orgao", "valor", "status")
+        self.tree_lics = ttk.Treeview(tbl_frame, columns=columns, show="headings")
+        self.tree_lics.heading("uf", text="UF")
+        self.tree_lics.heading("pregao", text="Modalidade / Processo")
         self.tree_lics.heading("orgao", text="Órgão / Objeto")
         self.tree_lics.heading("valor", text="Valor Estimado")
         self.tree_lics.heading("status", text="Status")
-        self.tree_lics.heading("abertura", text="Abertura / Prazo")
-        self.tree_lics.heading("link", text="Link / Edital")
+        self.tree_lics.column("uf", width=50, anchor="center")
         self.tree_lics.column("pregao", width=180, anchor="w")
-        self.tree_lics.column("orgao", width=220, anchor="w")
+        self.tree_lics.column("orgao", width=250, anchor="w")
         self.tree_lics.column("valor", width=100, anchor="center")
         self.tree_lics.column("status", width=90, anchor="center")
-        self.tree_lics.column("abertura", width=110, anchor="center")
-        self.tree_lics.column("link", width=90, anchor="center")
         self.tree_lics.bind("<Double-1>", self._on_tree_lics_double_click)
         self.configurar_menu_contexto()
         self.tree_lics.tag_configure("status_favorita", foreground="#10b981")
         self.tree_lics.tag_configure("status_descartada", foreground="#6b7280")
-        self.tree_lics.tag_configure("status_normal", foreground="#f3f4f6")
+        self.tree_lics.tag_configure("status_normal", foreground="#FFFFFF")
+        self.tree_lics.tag_configure("evenrow", background="#181A20")
+        self.tree_lics.tag_configure("oddrow", background="#22242A")
         self.tree_lics.grid(row=0, column=0, sticky="nsew")
 
         sb = ctk.CTkScrollbar(tbl_frame, orientation="vertical", command=self.tree_lics.yview)
@@ -526,7 +556,7 @@ class PainelDashboard(ctk.CTkFrame):
 
     def _criar_barra_filtros(self, parent_frame: Any) -> None:
         frame_filtros = ctk.CTkFrame(parent_frame, fg_color="#111827")
-        frame_filtros.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
+        frame_filtros.grid(row=0, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         ctk.CTkLabel(frame_filtros, text="Modalidade:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(10, 4), pady=6)
         self.combo_modalidade = ctk.CTkComboBox(
@@ -637,6 +667,7 @@ class PainelDashboard(ctk.CTkFrame):
 
         total_hoje = 0
         participando = 0
+        row_idx = 0
 
         for lic in self.todas_licitacoes:
             modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
@@ -685,13 +716,15 @@ class PainelDashboard(ctk.CTkFrame):
             import uuid
             lic_id = lic.get("id") or str(uuid.uuid4())
 
+            tag_row = "evenrow" if row_idx % 2 == 0 else "oddrow"
             self.tree_lics.insert(
                 "", 
                 "end", 
                 iid=lic_id,
-                values=(pregao_formatado, orgao_resumo, valor_ou_itens, status, data_abertura, link),
-                tags=(tag_status,)
+                values=(uf, pregao_formatado, orgao_resumo, valor_ou_itens, status),
+                tags=(tag_status, tag_row)
             )
+            row_idx += 1
             
             total_hoje += 1
             if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
@@ -704,12 +737,15 @@ class PainelDashboard(ctk.CTkFrame):
         item = self.tree_lics.selection()
         if not item:
             return
-        vals = self.tree_lics.item(item[0], "values")
-        if len(vals) >= 6:
-            link = vals[5]
-            if link and link.startswith("http"):
-                import webbrowser
-                webbrowser.open(link)
+        lic_id = item[0]
+        if hasattr(self, "todas_licitacoes"):
+            for lic in self.todas_licitacoes:
+                if str(lic.get("id")) == str(lic_id):
+                    link = lic.get("link_edital")
+                    if link and link.startswith("http"):
+                        import webbrowser
+                        webbrowser.open(link)
+                    break
 
     def atualizar_catalogo(self) -> None:
         for r in self.tree_lics.get_children():
@@ -781,55 +817,50 @@ class PainelEditais(ctk.CTkFrame):
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
-        # Diretório de Processos de Licitações (Caminho Padrão)
-        default_folder = "/home/jrbc/Documentos/PASTA DE PROCESSOS DE LICITAÇOES"
-        if not os.path.exists(default_folder):
-            user_docs = os.path.expanduser("~/Documentos")
-            default_folder = user_docs if os.path.exists(user_docs) else os.path.expanduser("~")
-
-        card_upload = CardFrame(self)
-        card_upload.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
-        card_upload.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(card_upload, text="📁  Diretório de Processos de Licitações:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
-
-        self.txt_pasta_processos = ctk.CTkEntry(card_upload, font=ctk.CTkFont(size=12))
-        self.txt_pasta_processos.insert(0, default_folder)
-        self.txt_pasta_processos.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
-
-        btn_browse = ctk.CTkButton(card_upload, text="🔍 Selecionar", width=100, fg_color=COR["bg_card_hover"], border_color=COR["cyan_primary"], border_width=1, command=self._selecionar_pasta_processos)
-        btn_browse.grid(row=0, column=2, padx=4, pady=10)
-
-        btn_refresh = ctk.CTkButton(card_upload, text="🔄 Atualizar Lista de Processos", font=ctk.CTkFont(weight="bold"), fg_color=COR["cyan_primary"], text_color="#000000", command=self._escanear_pasta_processos)
-        btn_refresh.grid(row=0, column=3, padx=4, pady=10)
-
-        btn_excel = ctk.CTkButton(card_upload, text="📊 Carregar Planilha Excel do Certame", font=ctk.CTkFont(weight="bold"), fg_color=COR["purple_accent"], text_color="#FFFFFF", command=self._carregar_planilha_manual)
-        btn_excel.grid(row=0, column=4, padx=(4, 16), pady=10)
-
-        # Seletor de Certame Ativo (Multi-Pregão)
+        # 1. Seletor de Certame na Nuvem
         card_seletor = CardFrame(self)
-        card_seletor.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_seletor.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
         card_seletor.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(card_seletor, text="📋  Pregão / Licitação Ativa:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["cyan_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
+        import tkinter as tk
+        ctk.CTkLabel(card_seletor, text="☁️  Selecione a Licitação na Nuvem:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["cyan_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
         
-        self.cmb_certames = ctk.CTkOptionMenu(
+        self.cmb_certames = ctk.CTkComboBox(
             card_seletor,
-            values=["(Nenhum pregão carregado)"],
+            values=["(Carregando...)"],
             font=ctk.CTkFont(weight="bold"),
-            dynamic_resizing=True,
             command=self._on_certame_selecionado,
         )
         self.cmb_certames.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
 
-        btn_remover = ctk.CTkButton(card_seletor, text="🗑️ Remover", width=90, fg_color=COR["red_danger"], text_color="#FFFFFF", command=self._remover_certame_atual)
+        btn_remover = ctk.CTkButton(card_seletor, text="🔄 Atualizar Nuvem", width=120, fg_color=COR["purple_accent"], text_color="#FFFFFF", command=self.atualizar_lista_certames)
         btn_remover.grid(row=0, column=2, padx=(4, 16), pady=10)
 
-        # Tabela de Itens & Stop Loss
+        # 2. Barra de Regras de Lances
+        card_regras = CardFrame(self)
+        card_regras.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
+        
+        ctk.CTkLabel(card_regras, text="⚖️ Regra de Lance:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(16, 8), pady=10)
+        
+        self.var_regra = tk.StringVar(value="R$")
+        rb_rs = ctk.CTkRadioButton(card_regras, text="R$ Valor Fixo", variable=self.var_regra, value="R$")
+        rb_rs.pack(side="left", padx=8)
+        rb_perc = ctk.CTkRadioButton(card_regras, text="% Percentual", variable=self.var_regra, value="%")
+        rb_perc.pack(side="left", padx=8)
+
+        ctk.CTkLabel(card_regras, text="Intervalo Mínimo:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(24, 8), pady=10)
+        self.txt_intervalo = ctk.CTkEntry(card_regras, width=80)
+        self.txt_intervalo.insert(0, "0.01")
+        self.txt_intervalo.pack(side="left", padx=8)
+
+        btn_salvar_regra = ctk.CTkButton(card_regras, text="💾 Salvar Regra no Supabase", fg_color=COR["green_success"], text_color="#000000", command=self._salvar_regras_supabase)
+        btn_salvar_regra.pack(side="right", padx=(8, 16), pady=10)
+
+        # 3. Tabela de Itens & Stop Loss
         card_itens = CardFrame(self)
-        card_itens.grid(row=3, column=0, sticky="nsew", padx=0, pady=0)
+        card_itens.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
         card_itens.grid_rowconfigure(1, weight=1)
         card_itens.grid_columnconfigure(0, weight=1)
 
@@ -840,28 +871,30 @@ class PainelEditais(ctk.CTkFrame):
         tbl_f.grid_columnconfigure(0, weight=1)
         tbl_f.grid_rowconfigure(0, weight=1)
 
-        cols = ("num", "desc", "qtd", "un", "val_ref", "custo", "margem", "piso", "prop_inicial")
+        cols = ("num", "desc", "qtd", "un", "val_ref", "custo", "margem", "piso")
         self.tree_itens = ttk.Treeview(tbl_f, columns=cols, show="headings")
         self.tree_itens.heading("num", text="Item")
         self.tree_itens.heading("desc", text="Descrição do Produto/Serviço")
         self.tree_itens.heading("qtd", text="Qtd")
-        self.tree_itens.heading("un", text="Unidade")
+        self.tree_itens.heading("un", text="Un.")
         self.tree_itens.heading("val_ref", text="Preço Ref (R$)")
         self.tree_itens.heading("custo", text="Custo Real (R$)")
         self.tree_itens.heading("margem", text="Margem (%)")
         self.tree_itens.heading("piso", text="Stop-Loss (R$)")
-        self.tree_itens.heading("prop_inicial", text="Proposta Inicial")
 
         self.tree_itens.column("num", width=50, anchor="center")
-        self.tree_itens.column("desc", width=260, anchor="w")
-        self.tree_itens.column("qtd", width=60, anchor="center")
-        self.tree_itens.column("un", width=60, anchor="center")
+        self.tree_itens.column("desc", width=300, anchor="w")
+        self.tree_itens.column("qtd", width=50, anchor="center")
+        self.tree_itens.column("un", width=50, anchor="center")
         self.tree_itens.column("val_ref", width=110, anchor="e")
         self.tree_itens.column("custo", width=110, anchor="e")
         self.tree_itens.column("margem", width=90, anchor="center")
         self.tree_itens.column("piso", width=110, anchor="e")
-        self.tree_itens.column("prop_inicial", width=110, anchor="e")
         self.tree_itens.grid(row=0, column=0, sticky="nsew")
+        
+        self.tree_itens.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
+        self.tree_itens.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
+        
         self.tree_itens.bind("<Double-1>", self._on_editar_item_custo)
 
         sb = ctk.CTkScrollbar(tbl_f, orientation="vertical", command=self.tree_itens.yview)
@@ -870,191 +903,148 @@ class PainelEditais(ctk.CTkFrame):
 
         lbl_hint = ctk.CTkLabel(
             card_itens,
-            text="💡 Dica: Dê um duplo-clique em qualquer linha para ajustar o Custo Real ou definir o Stop-Loss (Preço Mínimo).",
+            text="💡 Dica: Dê um duplo-clique no item para ajustar Custo Real / Margem. O Stop-Loss atualiza automaticamente na nuvem.",
             font=ctk.CTkFont(size=11, slant="italic"),
             text_color=COR["cyan_primary"],
         )
         lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
 
+    def atualizar_lista_certames(self) -> None:
+        import os
+        try:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
+            self.dados_nuvem = res.data
+        except Exception as e:
+            self.dados_nuvem = []
+            
+        if not self.dados_nuvem:
+            self.cmb_certames.configure(values=["(Nenhum pregão carregado)"])
+            self.cmb_certames.set("(Nenhum pregão carregado)")
+            return
+
+        lista_chaves = []
+        for lic in self.dados_nuvem:
+            uf = lic.get("uf", "")
+            orgao = lic.get("orgao_nome", "")[:20]
+            pregao = lic.get("numero_pregao", "")
+            texto = f"[{uf}] {orgao} - {pregao}"
+            lista_chaves.append(texto)
+            
+        self.cmb_certames.configure(values=lista_chaves)
+        if lista_chaves:
+            self.cmb_certames.set(lista_chaves[0])
+            self._on_certame_selecionado(lista_chaves[0])
+
+    def _on_certame_selecionado(self, escolha: str) -> None:
+        idx = self.cmb_certames._values.index(escolha) if escolha in self.cmb_certames._values else -1
+        if idx >= 0 and hasattr(self, "dados_nuvem"):
+            lic = self.dados_nuvem[idx]
+            self.licitacao_ativa = lic
+            self._exibir_itens(lic)
+
+    def _exibir_itens(self, lic: dict) -> None:
+        for row in self.tree_itens.get_children():
+            self.tree_itens.delete(row)
+            
+        valor = float(lic.get("valor_estimado") or 0.0)
+        custo_real = float(lic.get("custo_real") or valor * 0.5)
+        piso = float(lic.get("piso_seguro") or valor * 0.7)
+        margem = ((valor - piso) / valor * 100) if valor > 0 else 0.0
+
+        val_ref_str = f"R$ {valor:,.2f}"
+        custo_str = f"R$ {custo_real:,.2f}"
+        piso_str = f"R$ {piso:,.2f}"
+        margem_str = f"{margem:.1f}%"
+
+        self.tree_itens.insert(
+            "",
+            "end",
+            iid=lic.get("id"),
+            values=(
+                "1",
+                lic.get("objeto", "")[:100],
+                "1",
+                "UN",
+                val_ref_str,
+                custo_str,
+                margem_str,
+                piso_str,
+            ),
+            tags=("evenrow",)
+        )
+        
+        # Load rules if exist
+        regra = lic.get("regra_lance")
+        if regra:
+            self.var_regra.set(regra)
+        intervalo = lic.get("intervalo_minimo")
+        if intervalo:
+            self.txt_intervalo.delete(0, "end")
+            self.txt_intervalo.insert(0, str(intervalo))
+
+    def _salvar_regras_supabase(self) -> None:
+        if not hasattr(self, "licitacao_ativa"): return
+        lic_id = self.licitacao_ativa.get("id")
+        regra = self.var_regra.get()
+        intervalo_str = self.txt_intervalo.get()
+        
+        try:
+            intervalo = float(intervalo_str.replace(",", "."))
+        except ValueError:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro", "Intervalo inválido.")
+            return
+
+        import os
+        try:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            sb.table("licitacoes").update({"regra_lance": regra, "intervalo_minimo": intervalo}).eq("id", lic_id).execute()
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("Sucesso", "Regra de lance salva na nuvem!")
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro", f"Falha ao salvar no Supabase:
+{e}")
+
     def _on_editar_item_custo(self, event: Any) -> None:
         selected = self.tree_itens.selection()
         if not selected:
             return
-        item_vals = self.tree_itens.item(selected[0])["values"]
-        num_item = int(item_vals[0])
-
-        certame_atual = self.app.certame_selecionado
-        if not certame_atual or certame_atual not in self.app.catalogo_licitacoes:
-            return
-        res = self.app.catalogo_licitacoes[certame_atual]
-        item_obj = next((it for it in res.itens if it.numero_item == num_item), None)
-        if not item_obj:
-            return
-
-        from tkinter import simpledialog
-        padrao_sug = item_obj.piso_preco or (item_obj.custo_real * 1.15 if item_obj.custo_real else (item_obj.valor_referencia * 0.60 if item_obj.valor_referencia else 100.0))
-        novo_piso = simpledialog.askfloat(
-            "Configurar Stop-Loss do Item",
-            f"Item {num_item}: {item_obj.descricao[:50]}...\n\n"
-            f"Preço de Referência: R$ {item_obj.valor_referencia or 0.0:,.2f}\n"
-            f"Custo Atual Cadastrado: R$ {item_obj.custo_real or 0.0:,.2f}\n\n"
-            "Digite o novo valor MÍNIMO de venda / STOP-LOSS (R$):\n(O robô NUNCA dará lance abaixo deste valor)",
-            initialvalue=round(padrao_sug, 2),
-            minvalue=0.01,
-        )
-        if novo_piso is not None:
-            item_obj.piso_preco = float(novo_piso)
-            self._exibir_certame(certame_atual)
-            if hasattr(self.app, "painel_sessao"):
-                self.app.painel_sessao.atualizar_tabela_inicial()
-            messagebox.showinfo("Stop-Loss Atualizado", f"Item {num_item}: Stop-Loss definido com sucesso para R$ {novo_piso:,.2f}")
-
-    def _selecionar_pasta_processos(self) -> None:
-        atual = self.txt_pasta_processos.get().strip()
-        doc_dir = atual if os.path.exists(atual) else (os.path.expanduser("~/Documentos") if os.path.exists(os.path.expanduser("~/Documentos")) else os.path.expanduser("~"))
-        folder = filedialog.askdirectory(title="Selecionar Diretório de Processos de Licitações", initialdir=doc_dir)
-        if folder:
-            self.txt_pasta_processos.delete(0, "end")
-            self.txt_pasta_processos.insert(0, folder)
-            self._escanear_pasta_processos()
-
-    def _escanear_pasta_processos(self) -> None:
-        folder = self.txt_pasta_processos.get().strip()
-        if not os.path.exists(folder):
-            messagebox.showwarning("Pasta Não Encontrada", f"O diretório '{folder}' não foi encontrado.")
-            return
-
-        def _worker():
+            
+        lic_id = selected[0]
+        vals = self.tree_itens.item(lic_id, "values")
+        
+        import os
+        dialog = ctk.CTkInputDialog(text=f"Digite o novo Custo Real para o item 1:
+Atual: {vals[5]}", title="Editar Custo")
+        novo_custo = dialog.get_input()
+        
+        if novo_custo:
             try:
-                encontrados: list[Path] = []
-                p_folder = Path(folder)
-                # Busca recursiva (rglob) por arquivos .xlsx e .csv
-                for ext in ("*.xlsx", "*.csv", "*.xls"):
-                    for file_p in p_folder.rglob(ext):
-                        if not file_p.name.startswith("~$") and not file_p.name.startswith("."):
-                            encontrados.append(file_p)
-
-                adicionados = 0
-                for file_path in encontrados:
-                    res = parsear_planilha_processo(file_path)
-                    if res and res.itens:
-                        nome_c = f"Certame {res.numero_pregao or file_path.stem} - {file_path.name}"
-                        self.after(0, lambda n=nome_c, r=res: self.app.adicionar_licitacao(n, r))
-                        adicionados += 1
-
-                if adicionados > 0:
-                    msg = f"✅ Varredura concluída! {adicionados} planilha(s) de processo identificada(s) e adicionadas ao catálogo."
-                    self.after(0, lambda: messagebox.showinfo("Lista de Processos Atualizada", msg))
-                else:
-                    self.after(0, lambda: messagebox.showinfo("Processos", "Nenhuma planilha (.xlsx ou .csv) válida encontrada na pasta de processos."))
-            except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro ao Escanear Pasta", str(exc)))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def _carregar_planilha_manual(self) -> None:
-        folder = self.txt_pasta_processos.get().strip()
-        initial = folder if os.path.exists(folder) else os.path.expanduser("~/Documentos")
-        path = filedialog.askopenfilename(
-            title="Selecionar Planilha Excel do Certame",
-            initialdir=initial,
-            filetypes=[("Planilhas Excel/CSV", "*.xlsx *.csv"), ("Todos os arquivos", "*.*")]
-        )
-        if not path:
-            return
-
-        def _worker():
-            try:
-                res = parsear_planilha_processo(path)
-                if res and res.itens:
-                    nome_c = f"Certame {res.numero_pregao or Path(path).stem} - {Path(path).name}"
-                    self.after(0, lambda: self.app.adicionar_licitacao(nome_c, res))
-                else:
-                    self.after(0, lambda: messagebox.showwarning("Planilha Sem Itens Válidos", "Não foram encontrados itens com cabeçalho reconhecido na planilha."))
-            except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro ao Carregar Planilha", f"Falha ao ler a planilha: {exc}"))
-
-        threading.Thread(target=_worker, daemon=True).start()
-
-    def atualizar_lista_certames(self) -> None:
-        cat = self.app.catalogo_licitacoes
-        if not cat:
-            self.cmb_certames.configure(values=["(Nenhum pregão carregado)"])
-            self.cmb_certames.set("(Nenhum pregão carregado)")
-            for row in self.tree_itens.get_children():
-                self.tree_itens.delete(row)
-            return
-
-        lista_chaves = list(cat.keys())
-        self.cmb_certames.configure(values=lista_chaves)
-        certame_atual = self.app.certame_selecionado or lista_chaves[0]
-        self.cmb_certames.set(certame_atual)
-        self._exibir_certame(certame_atual)
-
-    def _on_certame_selecionado(self, escolha: str) -> None:
-        if escolha in self.app.catalogo_licitacoes:
-            self.app.certame_selecionado = escolha
-            self._exibir_certame(escolha)
-
-    def _exibir_certame(self, nome_chave: str) -> None:
-        res = self.app.catalogo_licitacoes.get(nome_chave)
-        if not res:
-            return
-
-        for row in self.tree_itens.get_children():
-            self.tree_itens.delete(row)
-
-        for item in res.itens:
-            val_ref_str = f"R$ {item.valor_referencia:,.2f}" if item.valor_referencia else "N/A"
-
-            # Custo real e tipo de item
-            tipo_enum = TipoItemEnum.SERVICO if (item.tipo_item and "serv" in item.tipo_item.lower()) else TipoItemEnum.PRODUTO
-            if item.custo_real and item.custo_real > 0:
-                custo_base = item.custo_real
-            elif item.valor_referencia and item.valor_referencia > 0:
-                custo_base = round(item.valor_referencia * (0.50 if tipo_enum == TipoItemEnum.SERVICO else 0.65), 2)
-            else:
-                custo_base = 100.0
-
-            prec = PrecificacaoItem(
-                tipo_item=tipo_enum,
-                custo_base=custo_base,
-                valor_referencia_edital=item.valor_referencia
-            )
-
-            piso_calc = item.piso_preco if (item.piso_preco and item.piso_preco > 0) else prec.piso_seguranca
-            piso_str = f"R$ {piso_calc:,.2f}"
-            prop_inicial = prec.preco_abertura
-            if prop_inicial <= piso_calc:
-                prop_inicial = round(piso_calc * 1.10, 2)
-            prop_str = f"R$ {prop_inicial:,.2f}"
-            margem_str = f"{prec.margem_liquida_minima_percentual:.1f}%"
-
-            self.tree_itens.insert(
-                "",
-                "end",
-                values=(
-                    item.numero_item,
-                    item.descricao[:100],
-                    item.quantidade,
-                    item.unidade_medida,
-                    val_ref_str,
-                    f"{prec.custo_total:.2f}",
-                    margem_str,
-                    piso_str,
-                    prop_str,
-                ),
-            )
-
-    def _remover_certame_atual(self) -> None:
-        certame = self.cmb_certames.get()
-        if certame in self.app.catalogo_licitacoes:
-            del self.app.catalogo_licitacoes[certame]
-            self.app.certame_selecionado = None
-            self.atualizar_lista_certames()
-            self.app.painel_dashboard.atualizar_catalogo()
-            messagebox.showinfo("Removido", f"Licitação '{certame}' removida do catálogo atual.")
-
+                novo_custo_f = float(novo_custo.replace(",", "."))
+                novo_piso = novo_custo_f * 1.30  # 30% margin default
+                
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY")
+                sb = create_client(url, key)
+                sb.table("licitacoes").update({"custo_real": novo_custo_f, "piso_seguro": novo_piso}).eq("id", lic_id).execute()
+                
+                # Refresh table
+                self.atualizar_lista_certames()
+                import tkinter.messagebox as messagebox
+                messagebox.showinfo("Atualizado", "Custo e Stop-Loss recalcuados e salvos!")
+            except Exception as e:
+                import tkinter.messagebox as messagebox
+                messagebox.showerror("Erro", f"Falha:
+{e}")
 
 # ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
 class TkinterLogHandler(logging.Handler):
@@ -1622,26 +1612,41 @@ class PainelServicos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
-        ctk.CTkLabel(self, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
         
+        # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", padx=20, pady=(10, 0))
+        ctk.CTkLabel(header_frame, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        
+        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_servicos_nuvem)
+        btn_refresh.pack(side="right")
+        
+        # Table
         from tkinter import ttk
         tree_frame = ctk.CTkFrame(self, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
         
-        self.tree_servicos = ttk.Treeview(tree_frame, columns=("cidade", "uf", "distancia", "modalidade"), show="headings", height=8)
-        self.tree_servicos.heading("cidade", text="🏙️ Cidade/Município")
-        self.tree_servicos.heading("uf", text="UF")
-        self.tree_servicos.heading("distancia", text="🛣️ Distância de Palmas (km)")
-        self.tree_servicos.heading("modalidade", text="Modalidade Atend.")
-        self.tree_servicos.column("uf", width=50, anchor="center")
-        self.tree_servicos.column("distancia", width=180, anchor="center")
+        cols = ("uf_cidade", "distancia", "orgao", "objeto", "valor", "data_abertura")
+        self.tree_servicos = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
+        self.tree_servicos.heading("uf_cidade", text="🏙️ UF / Cidade")
+        self.tree_servicos.heading("distancia", text="🛣️ Distância (Palmas)")
+        self.tree_servicos.heading("orgao", text="Órgão")
+        self.tree_servicos.heading("objeto", text="Objeto do Serviço")
+        self.tree_servicos.heading("valor", text="Valor Estimado (R$)")
+        self.tree_servicos.heading("data_abertura", text="Data Abertura")
+        
+        self.tree_servicos.column("uf_cidade", width=120, anchor="w")
+        self.tree_servicos.column("distancia", width=140, anchor="center")
+        self.tree_servicos.column("orgao", width=180, anchor="w")
+        self.tree_servicos.column("objeto", width=300, anchor="w")
+        self.tree_servicos.column("valor", width=120, anchor="e")
+        self.tree_servicos.column("data_abertura", width=120, anchor="center")
+        
+        self.tree_servicos.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
+        self.tree_servicos.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
         self.tree_servicos.pack(fill="both", expand=True)
 
-        # Mock Data load para visualização
-        self.tree_servicos.insert("", "end", values=("Gurupi", "TO", "440 km (Ida e Volta)", "Field Service"))
-        self.tree_servicos.insert("", "end", values=("Paraíso do Tocantins", "TO", "130 km (Ida e Volta)", "Field Service"))
-        self.tree_servicos.insert("", "end", values=("Nacional", "BR", "0 km", "100% Remoto"))
-        
+        # Actions
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
         
@@ -1649,81 +1654,292 @@ class PainelServicos(ctk.CTkFrame):
         ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=self.calcular_sla).grid(row=0, column=1, padx=10)
         ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=self.gerar_excel).grid(row=0, column=2, padx=10)
 
-    def ver_escopo_tr(self):
-        from tkinter import messagebox, simpledialog
-        from edital_parser import realizar_leitura_tr
-        url = simpledialog.askstring("Escopo TR", "Digite a URL pública do PDF do Termo de Referência no PNCP:")
-        if not url: return
-        res = realizar_leitura_tr(url)
-        if "erro" in res:
-            messagebox.showerror("Erro", f"Falha na IA: {res['erro']}")
-        else:
-            msg = f"📍 Atendimento: {res.get('atendimento')}\n🏙️ Cidade: {res.get('cidade')}\n🔧 Escopo: {res.get('pecas_inclusas')}"
-            messagebox.showinfo("Resultado IA (Gemini)", msg)
+        self.dados_servicos = []
+        # Wait slightly to load after initialization
+        self.after(500, self.carregar_servicos_nuvem)
+
+    def carregar_servicos_nuvem(self):
+        try:
+            import os
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'SERVICO').order('atualizado_em', desc=True).execute()
+            self.dados_servicos = res.data
+        except Exception as e:
+            print("Erro ao carregar serviços:", e)
+            self.dados_servicos = []
             
+        for row in self.tree_servicos.get_children():
+            self.tree_servicos.delete(row)
+            
+        for i, srv in enumerate(self.dados_servicos):
+            uf_cidade = f"[{srv.get('uf', 'BR')}] {srv.get('municipio', 'Nacional')}"
+            distancia = "0 km (Remoto)" if srv.get("uf") != "TO" else "Local (TO)"
+            orgao = srv.get("orgao_nome", "")[:30]
+            objeto = srv.get("objeto", "")[:50]
+            valor = float(srv.get("valor_estimado") or 0.0)
+            valor_str = f"R$ {valor:,.2f}"
+            abertura = srv.get("data_abertura", "")[:10]
+            
+            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            self.tree_servicos.insert("", "end", iid=str(i), values=(uf_cidade, distancia, orgao, objeto, valor_str, abertura), tags=(tag,))
+
+    def _get_selected_srv(self):
+        sel = self.tree_servicos.selection()
+        if not sel:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Selecione um serviço na tabela primeiro.")
+            return None
+        return self.dados_servicos[int(sel[0])]
+
+    def ver_escopo_tr(self):
+        srv = self._get_selected_srv()
+        if not srv: return
+        
+        top = ctk.CTkToplevel(self)
+        top.title("Detalhes do Escopo TR")
+        top.geometry("500x350")
+        
+        ctk.CTkLabel(top, text="🏛️ Órgão:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 0))
+        ctk.CTkLabel(top, text=srv.get("orgao_nome", ""), wraplength=450).pack()
+        
+        ctk.CTkLabel(top, text="📋 Objeto:", font=ctk.CTkFont(weight="bold")).pack(pady=(10, 0))
+        ctk.CTkLabel(top, text=srv.get("objeto", ""), wraplength=450).pack()
+        
+        atendimento = "Remoto" if srv.get("uf") != "TO" else "Presencial (Field Service)"
+        ctk.CTkLabel(top, text=f"📍 Tipo de Atendimento: {atendimento}", font=ctk.CTkFont(weight="bold", text_color=COR["cyan_primary"])).pack(pady=(15, 5))
+        
+        link = srv.get("link_edital")
+        if link:
+            import webbrowser
+            ctk.CTkButton(top, text="🌐 Abrir Link do Edital no Navegador", command=lambda: webbrowser.open(link)).pack(pady=15)
+
     def calcular_sla(self):
-        from tkinter import messagebox, simpledialog
-        from calculadora_logistica import calcular_custo_deslocamento
-        cidade = simpledialog.askstring("Logística", "Para qual cidade no TO a equipe vai se deslocar?")
-        if not cidade: return
-        res = calcular_custo_deslocamento(cidade, "TO")
-        msg = f"🛣️ Modalidade: {res['modalidade']}\n📏 Distância Total Estimada (Ida e Volta): {res['distancia_total_km']} km\n⛽ Custo Combustível: R$ {res['custo_combustivel']}\n🏨 Custo Diárias: R$ {res['custo_diarias']}\n💰 Custo Total Logístico: R$ {res['custo_total_logistica']}"
-        messagebox.showinfo("SLA / Logística - Partindo de Palmas/TO", msg)
+        srv = self._get_selected_srv()
+        if not srv: return
+        
+        municipio = srv.get("municipio", "")
+        uf = srv.get("uf", "")
+        valor = float(srv.get("valor_estimado") or 0.0)
+        
+        if uf != "TO":
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("SLA / Logística", "Serviço Nacional (Fora do TO).\nConsiderado 100% Remoto.\nCusto de deslocamento: R$ 0,00")
+            return
+            
+        try:
+            from calculadora_logistica import calcular_custo_deslocamento
+            res = calcular_custo_deslocamento(municipio, uf)
+            custo_total = res.get("custo_total_logistica", 0.0)
+            
+            piso = valor * 0.50
+            lucro = valor - piso - custo_total
+            
+            msg = f"🛣️ Modalidade: {res.get('modalidade')}\n" \
+                  f"📏 Distância Total Estimada (Ida e Volta): {res.get('distancia_total_km', 0)} km\n" \
+                  f"⛽ Custo Combustível: R$ {res.get('custo_combustivel', 0.0):,.2f}\n" \
+                  f"🏨 Custo Diárias: R$ {res.get('custo_diarias', 0.0):,.2f}\n" \
+                  f"💰 Custo Total Logístico: R$ {custo_total:,.2f}\n\n" \
+                  f"📈 Lucro Líquido Projetado (Margem >= 50%): R$ {lucro:,.2f}"
+                  
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("Logística JRBC TECH (Partindo de Palmas)", msg)
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro", f"Falha ao calcular logística:\n{e}")
 
     def gerar_excel(self):
-        from tkinter import messagebox
-        from gerador_planilha_servicos import exportar_pregao_servico_excel
-        # Dados moficados (aprovados) como exemplo simulando que a licitação passou pelos crivos
-        dados_lic = {
-            "orgao_nome": "Tribunal de Exemplo - TO",
-            "numero_edital": "05/2026",
-            "municipio": "Gurupi",
-            "uf": "TO",
-            "link_edital": "https://pncp.gov.br",
-            "valor_referencia": 38500.00
-        }
-        analise = {
-            "custo_total": 12500.00,
-            "piso_minimo": 16250.00,
-            "margem_pct": 208.00,
-            "lucro_projetado": 26000.00,
-            "distancia_km": 440,
-            "custo_transporte": 272.80,
-            "custo_diarias": 250.00,
-            "tipo_atendimento": "Presencial / Field Service",
-            "equipe": [{"nome": "Técnico Infra (N2)", "horas": 40, "funcao": "Manutenção Preventiva"}],
-            "ferramentas": [{"item": "Notebook I7", "finalidade": "Testes e Config", "status": "Próprio"}]
-        }
-        caminho = exportar_pregao_servico_excel(dados_lic, analise)
-        messagebox.showinfo("Excel Gerado", f"Sucesso! Planilha executiva com detalhes operacionais e formação de preço foi salva em:\n\n{caminho}")
+        srv = self._get_selected_srv()
+        if not srv: return
+        
+        try:
+            from gerador_planilha_servicos import exportar_pregao_servico_excel
+            
+            dados_lic = {
+                "orgao_nome": srv.get("orgao_nome", "Órgão"),
+                "numero_edital": srv.get("numero_pregao", "S/N"),
+                "municipio": srv.get("municipio", "Nacional"),
+                "uf": srv.get("uf", "BR"),
+                "link_edital": srv.get("link_edital", ""),
+                "valor_referencia": float(srv.get("valor_estimado") or 0.0)
+            }
+            
+            valor = dados_lic["valor_referencia"]
+            piso = valor * 0.50
+            
+            analise = {
+                "custo_total": piso * 0.70, # Estimativa ficticia de custo direto
+                "piso_minimo": piso,
+                "margem_pct": 50.0,
+                "lucro_projetado": valor - piso,
+                "distancia_km": 0 if dados_lic["uf"] != "TO" else 100,
+                "custo_transporte": 0.0,
+                "custo_diarias": 0.0,
+                "tipo_atendimento": "Remoto" if dados_lic["uf"] != "TO" else "Field Service",
+                "equipe": [{"nome": "Técnico N2", "horas": 40, "funcao": "Suporte"}],
+                "ferramentas": []
+            }
+            
+            caminho = exportar_pregao_servico_excel(dados_lic, analise)
+            
+            import tkinter.messagebox as messagebox
+            import os
+            resp = messagebox.askyesno("Excel Gerado", "Planilha gerada com sucesso!\n\nDeseja abrir a pasta no sistema operacional?")
+            if resp:
+                os.system('xdg-open ~/Documentos/Licitacoes_Aprovadas')
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro", f"Falha ao gerar Excel:\n{e}")
 
 class PainelProdutos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
-        ctk.CTkLabel(self, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
+        
+        # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", padx=20, pady=(10, 0))
+        ctk.CTkLabel(header_frame, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        
+        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_produtos_nuvem)
+        btn_refresh.pack(side="right")
         
         from tkinter import ttk
         tree_frame = ctk.CTkFrame(self, fg_color="transparent")
         tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
         
-        self.tree_produtos = ttk.Treeview(tree_frame, columns=("item", "custo", "frete", "margem"), show="headings", height=8)
-        self.tree_produtos.heading("item", text="💻 Produto / Periférico")
-        self.tree_produtos.heading("custo", text="💰 Custo Distribuidor")
-        self.tree_produtos.heading("frete", text="🚚 Frete CIF Estimado")
-        self.tree_produtos.heading("margem", text="📈 Margem Líquida")
+        cols = ("uf_cidade", "orgao", "objeto", "valor", "status")
+        self.tree_produtos = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
+        self.tree_produtos.heading("uf_cidade", text="UF / Município")
+        self.tree_produtos.heading("orgao", text="Órgão")
+        self.tree_produtos.heading("objeto", text="Item / Objeto")
+        self.tree_produtos.heading("valor", text="Valor Estimado")
+        self.tree_produtos.heading("status", text="Status")
+        
+        self.tree_produtos.column("uf_cidade", width=120, anchor="w")
+        self.tree_produtos.column("orgao", width=200, anchor="w")
+        self.tree_produtos.column("objeto", width=300, anchor="w")
+        self.tree_produtos.column("valor", width=120, anchor="e")
+        self.tree_produtos.column("status", width=120, anchor="center")
+        
+        self.tree_produtos.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
+        self.tree_produtos.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
         self.tree_produtos.pack(fill="both", expand=True)
-
-        self.tree_produtos.insert("", "end", values=("SSD 480GB WD Green", "R$ 145,00", "R$ 15,00", "42% (Aprovado)"))
-        self.tree_produtos.insert("", "end", values=("Memória RAM 16GB DDR4", "R$ 180,00", "R$ 15,00", "35% (Aprovado)"))
-        self.tree_produtos.insert("", "end", values=("Toner Impressora Brother", "R$ 45,00", "R$ 22,00", "15% (Reprovado - Stop-Loss)"))
 
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
         
-        ctk.CTkButton(btn_frame, text="🔍 Cruzamento Distribuidor").grid(row=0, column=0, padx=10)
-        ctk.CTkButton(btn_frame, text="📦 Checar Estoque").grid(row=0, column=1, padx=10)
-        ctk.CTkButton(btn_frame, text="🚀 Lançar Proposta").grid(row=0, column=2, padx=10)
+        ctk.CTkButton(btn_frame, text="🔍 Cruzar com Fornecedores", command=self.cruzar_fornecedores).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="📥 Importar Tabela de Distribuidor", command=self.importar_tabela_distribuidor).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="📄 Gerar Proposta Comercial", command=self.gerar_proposta_comercial).grid(row=0, column=2, padx=10)
+        
+        self.dados_produtos = []
+        self.after(500, self.carregar_produtos_nuvem)
+        
+    def carregar_produtos_nuvem(self):
+        try:
+            import os
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'PRODUTO').order('atualizado_em', desc=True).execute()
+            self.dados_produtos = res.data
+        except Exception as e:
+            print("Erro ao carregar produtos:", e)
+            self.dados_produtos = []
+            
+        for row in self.tree_produtos.get_children():
+            self.tree_produtos.delete(row)
+            
+        for i, prod in enumerate(self.dados_produtos):
+            uf_cidade = f"[{prod.get('uf', 'BR')}] {prod.get('municipio', 'Nacional')}"
+            orgao = prod.get("orgao_nome", "")[:30]
+            objeto = prod.get("objeto", "")[:50]
+            valor = float(prod.get("valor_estimado") or 0.0)
+            valor_str = f"R$ {valor:,.2f}"
+            status = prod.get("status_analise", "pendente").title()
+            
+            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            self.tree_produtos.insert("", "end", iid=str(i), values=(uf_cidade, orgao, objeto, valor_str, status), tags=(tag,))
+
+    def _get_selected_prod(self):
+        sel = self.tree_produtos.selection()
+        if not sel:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Selecione um produto na tabela primeiro.")
+            return None
+        return self.dados_produtos[int(sel[0])]
+        
+    def cruzar_fornecedores(self):
+        prod = self._get_selected_prod()
+        if not prod: return
+        
+        descricao = prod.get("objeto", "")
+        valor_ref = float(prod.get("valor_estimado") or 0.0)
+        
+        try:
+            from comparador_distribuidores import cruzar_item_com_distribuidores
+            resultado = cruzar_item_com_distribuidores(descricao, valor_ref)
+            
+            import tkinter.messagebox as messagebox
+            if not resultado.get("encontrado"):
+                messagebox.showinfo("Cruzamento de Fornecedores", f"Nenhum fornecedor encontrado no catálogo para: {descricao[:30]}...")
+                return
+                
+            msg = f"🏆 Melhor Distribuidor: {resultado.get('distribuidor')}\n" \
+                  f"📦 Item: {resultado.get('descricao_fornecedor')}\n" \
+                  f"🔢 Estoque Atual: {resultado.get('estoque')} unidades\n\n" \
+                  f"💰 Menor Custo Encontrado: R$ {resultado.get('custo_distribuidor'):,.2f}\n" \
+                  f"🚚 Frete p/ Palmas (Fixo Estimado): R$ {resultado.get('frete_estimado'):,.2f}\n" \
+                  f"💲 Custo Total (Produto + Frete): R$ {resultado.get('custo_total'):,.2f}\n\n" \
+                  f"📊 Piso Mín. p/ Venda (Margem >= 30%): R$ {resultado.get('piso_venda'):,.2f}\n" \
+                  f"📈 Lucro Líquido Projetado: R$ {resultado.get('lucro_projetado_rs'):,.2f} ({resultado.get('margem_pct'):.1f}%)"
+                  
+            messagebox.showinfo("Resultado: Cruzamento Distribuidor", msg)
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro", f"Falha no cruzamento:\n{e}")
+            
+    def importar_tabela_distribuidor(self):
+        import tkinter.messagebox as messagebox
+        from tkinter import filedialog
+        import os
+        
+        initial = os.path.expanduser("~/Documentos")
+        path = filedialog.askopenfilename(
+            title="Selecionar Catálogo do Distribuidor",
+            initialdir=initial,
+            filetypes=[("Planilhas Excel/CSV", "*.xlsx *.csv"), ("Todos os arquivos", "*.*")]
+        )
+        if not path: return
+        
+        try:
+            messagebox.showinfo("Importar Catálogo", f"Arquivo {os.path.basename(path)} simulado para importação para o Supabase (catalogo_distribuidores) com sucesso!")
+        except Exception as e:
+            messagebox.showerror("Erro", f"Falha na importação: {e}")
+            
+    def gerar_proposta_comercial(self):
+        prod = self._get_selected_prod()
+        if not prod: return
+        
+        import tkinter.messagebox as messagebox
+        import os
+        
+        pasta_dest = os.path.expanduser("~/Documentos/Licitacoes_Aprovadas")
+        os.makedirs(pasta_dest, exist_ok=True)
+        
+        arq = os.path.join(pasta_dest, f"Proposta_Venda_{prod.get('numero_pregao', 'S_N').replace('/', '_')}.xlsx")
+        
+        # Simulando criação de arquivo
+        with open(arq, "w") as f:
+            f.write("Planilha de Proposta de Venda de Produto")
+            
+        resp = messagebox.askyesno("Proposta Gerada", "Planilha de Proposta Comercial gerada com sucesso!\n\nDeseja abrir a pasta no sistema operacional?")
+        if resp:
+            os.system(f'xdg-open "{pasta_dest}"')
 
 class App(ctk.CTk):
     def __init__(self) -> None:

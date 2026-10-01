@@ -95,82 +95,10 @@ def formatar_link_pncp(cnpj: str, ano: str, sequencial: str) -> str:
         return f"https://pncp.gov.br/app/editais/{cnpj_limpo}/{ano}/{sequencial}"
     return "https://pncp.gov.br"
 
-def enviar_alerta_telegram(payload: dict) -> bool:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-
-    orgao = html.escape(str(payload.get("orgao_nome") or "Órgão Público"))
-    uf = str(payload.get("uf") or "BR").upper()
-    municipio = html.escape(str(payload.get("municipio") or ""))
-    localidade = f"{municipio} - {uf}" if municipio and municipio != "Nacional" else uf
-    uasg = html.escape(str(payload.get("numero_uasg") or "S/ UASG"))
-    modalidade = html.escape(str(payload.get("modalidade") or "Licitação"))
-    num_processo = html.escape(str(payload.get("numero_pregao") or "S/N"))
-    
-    objeto_raw = str(payload.get("objeto") or "Sem descrição")
-    objeto = html.escape(objeto_raw[:350])
-    
-    valor_total = float(payload.get("valor_estimado") or 0.0)
-    link_edital = payload.get("link_edital") or "https://pncp.gov.br"
-
-    tipo = payload.get("tipo_contratacao", "SERVICO")
-    eh_servico = (tipo == "SERVICO")
-    icone = "🛠" if eh_servico else "📦"
-    margem = 50.0 if eh_servico else 30.0
-    fator_piso = 0.50 if eh_servico else 0.70
-    piso = valor_total * fator_piso if valor_total > 0 else 0.0
-    tag_tipo = "#SERVICO" if eh_servico else "#PRODUTO"
-    tag_mod = "#DISPENSA" if "dispensa" in modalidade.lower() else "#PREGAO"
-    
-    tag_uf = "#TOCANTINS" if uf == "TO" else "#GOIAS" if uf == "GO" else f"#{uf}"
-
-    data_abertura = payload.get("data_abertura") or ""
-    if "T" in str(data_abertura):
-        try:
-            dt = datetime.fromisoformat(str(data_abertura).replace("Z", "+00:00"))
-            data_abertura_fmt = dt.strftime("%d/%m/%Y às %H:%M")
-        except Exception:
-            data_abertura_fmt = html.escape(str(data_abertura))
-    else:
-        data_abertura_fmt = html.escape(str(data_abertura or "Consulte o edital"))
-
-    texto = (
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-        f"🏛 **{orgao.upper()}**\n"
-        f"📍 {localidade} | **UASG:** {uasg}\n"
-        f"📋 **{modalidade} nº {num_processo}**\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📝 **OBJETO DA CONTRATAÇÃO:**\n"
-        f"*{objeto}...*\n\n"
-        "💰 **ANÁLISE DE MARGEM (JRBC TECH):**\n"
-        f"• **Valor Estimado Edital:** R$ {valor_total:,.2f}\n"
-        f"• **Classificação:** {icone} {tipo}\n"
-        f"• **Margem Alvo Líquida:** {margem:.0f}%\n"
-        f"• **Piso de Lance Seguro:** R$ {piso:,.2f}\n\n"
-        f"📅 **ABERTURA DA SESSÃO:**\n{data_abertura_fmt}\n\n"
-        f"🏷 {tag_uf} {tag_mod} #TI {tag_tipo}\n"
-    )
-
-    url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    body = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": texto,
-        "parse_mode": "HTML",
-        "reply_markup": {
-            "inline_keyboard": [
-                [
-                    {"text": "📄 Abrir no PNCP", "url": link_edital},
-                    {"text": "🏛 Portal Compras.gov", "url": "https://www.gov.br/compras"}
-                ]
-            ]
-        }
-    }
-    try:
-        r = requests.post(url_api, json=body, timeout=12)
-        return r.status_code == 200
-    except Exception as e:
-        logger.error(f"Erro ao enviar Telegram: {e}")
-        return False
+from motor_assertivo import avaliar_certame
+from notificador_unificado import enviar_alerta_executivo
+from coletor_nucleogov import varrer_municipios_nucleogov
+from siga_monitor import varrer_siga_to
 
 def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
     url = "https://pncp.gov.br/api/search/"
@@ -233,6 +161,16 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
         "atualizado_em": datetime.now(timezone.utc).isoformat()
     }
 
+    # --- Avaliação Geográfica ---
+    crivo = avaliar_certame(payload)
+    if not crivo.get("aprovado"):
+        logger.debug(crivo.get("motivo"))
+        return
+        
+    payload["prioridade"] = crivo.get("prioridade")
+    payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
+    payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
+
     # 1. Salva no Supabase
     if supabase:
         try:
@@ -246,33 +184,92 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
 
     # 2. Envia para o Telegram (apenas inéditos)
     if numero_controle not in notificados:
-        if enviar_alerta_telegram(payload):
+        if enviar_alerta_executivo(payload):
             logger.info(f"🔔 Alerta Telegram enviado: [{payload['uf']}] {numero_controle}")
             notificados.add(numero_controle)
             salvar_historico_notificados(notificados)
             time.sleep(1)
 
+def processar_outras_fontes(oportunidades, notificados):
+    for item in oportunidades:
+        id_unico = item.get("id_unico")
+        if not id_unico: continue
+        
+        payload = {
+            "numero_controle_pncp": id_unico,
+            "numero_uasg": "S/ UASG",
+            "numero_pregao": item.get("numero_processo"),
+            "objeto": item.get("objeto"),
+            "orgao_nome": item.get("orgao_nome"),
+            "uf": item.get("uf"),
+            "municipio": item.get("municipio", ""),
+            "valor_estimado": item.get("valor_estimado"),
+            "data_abertura": None,
+            "link_edital": item.get("link_edital"),
+            "termo_busca": "TI",
+            "modalidade": item.get("modalidade"),
+            "tipo_contratacao": "SERVICO",
+            "status_analise": "pendente",
+            "atualizado_em": datetime.now(timezone.utc).isoformat()
+        }
+        
+        # --- Avaliação Geográfica ---
+        crivo = avaliar_certame(payload)
+        if not crivo.get("aprovado"):
+            logger.debug(crivo.get("motivo"))
+            continue
+            
+        payload["prioridade"] = crivo.get("prioridade")
+        payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
+        payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
+        
+        # Inject for Telegram
+        item["prioridade"] = payload["prioridade"]
+        item["piso_seguro"] = payload["piso_seguro"]
+
+        if supabase:
+            try:
+                supabase.table("licitacoes").upsert(
+                    payload,
+                    on_conflict="numero_controle_pncp"
+                ).execute()
+            except Exception as e:
+                logger.error(f"Erro ao salvar no Supabase (Fonte Externa): {e}")
+
+        if id_unico not in notificados:
+            # Passa o item original para ter 'esfera' e 'distancia_palmas'
+            if enviar_alerta_executivo(item):
+                logger.info(f"🔔 Alerta Telegram enviado ({item.get('origem')}): {id_unico}")
+                notificados.add(id_unico)
+                salvar_historico_notificados(notificados)
+                time.sleep(1)
+
 def executar_varredura_completa():
-    logger.info("=== INICIANDO VARREDURA NACIONAL PNCP (JRBC TECH) ===")
+    logger.info("=== INICIANDO RADAR TRÍPLICE (JRBC TECH) ===")
     notificados = carregar_historico_notificados()
     
-    # Dispensas (Modalidade 8)
+    logger.info(">>> 1. Varrendo PNCP (Federal/Nacional)...")
     for termo in TERMOS_CNAE:
-        logger.info(f"Buscando Dispensa: '{termo}'...")
         editais = buscar_contratacoes_pncp(termo, modalidade=8)
         for ed in editais:
             processar_e_salvar_edital(ed, termo, "Dispensa Eletrônica", notificados)
         time.sleep(1.5)
 
-    # Pregões (Modalidade 6)
     for termo in TERMOS_CNAE[:5]:
-        logger.info(f"Buscando Pregão: '{termo}'...")
         editais = buscar_contratacoes_pncp(termo, modalidade=6)
         for ed in editais:
             processar_e_salvar_edital(ed, termo, "Pregão Eletrônico", notificados)
         time.sleep(1.5)
 
-    logger.info("=== VARREDURA FINALIZADA COM SUCESSO ===")
+    logger.info(">>> 2. Varrendo NúcleoGov (Municípios do TO)...")
+    op_nucleo = varrer_municipios_nucleogov()
+    processar_outras_fontes(op_nucleo, notificados)
+    
+    logger.info(">>> 3. Varrendo SIGA-TO (Governo do TO)...")
+    op_siga = varrer_siga_to()
+    processar_outras_fontes(op_siga, notificados)
+
+    logger.info("=== RADAR TRÍPLICE FINALIZADO COM SUCESSO ===")
 
 if __name__ == "__main__":
     executar_varredura_completa()
