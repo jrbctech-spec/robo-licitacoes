@@ -12,6 +12,9 @@ Recursos Especiais:
 """
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv() # Carrega SUPABASE_URL e SUPABASE_KEY do .env
+
 import logging
 import os
 import sys
@@ -479,21 +482,32 @@ class PainelDashboard(ctk.CTkFrame):
 
         ctk.CTkLabel(card_lics, text="📋  Pregões & Dispensas Ativos no Sistema", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
 
+        self._criar_barra_filtros(card_lics)
+
         tbl_frame = ctk.CTkFrame(card_lics, fg_color="transparent")
-        tbl_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
         tbl_frame.grid_columnconfigure(0, weight=1)
         tbl_frame.grid_rowconfigure(0, weight=1)
 
-        columns = ("pregao", "orgao", "itens", "status")
+        columns = ("pregao", "orgao", "valor", "status", "abertura", "link")
         self.tree_lics = ttk.Treeview(tbl_frame, columns=columns, show="headings", height=8)
         self.tree_lics.heading("pregao", text="Pregão / UASG")
         self.tree_lics.heading("orgao", text="Órgão / Objeto")
-        self.tree_lics.heading("itens", text="Nº de Itens")
+        self.tree_lics.heading("valor", text="Valor Estimado")
         self.tree_lics.heading("status", text="Status")
-        self.tree_lics.column("pregao", width=140, anchor="w")
-        self.tree_lics.column("orgao", width=250, anchor="w")
-        self.tree_lics.column("itens", width=80, anchor="center")
-        self.tree_lics.column("status", width=110, anchor="center")
+        self.tree_lics.heading("abertura", text="Abertura / Prazo")
+        self.tree_lics.heading("link", text="Link / Edital")
+        self.tree_lics.column("pregao", width=180, anchor="w")
+        self.tree_lics.column("orgao", width=220, anchor="w")
+        self.tree_lics.column("valor", width=100, anchor="center")
+        self.tree_lics.column("status", width=90, anchor="center")
+        self.tree_lics.column("abertura", width=110, anchor="center")
+        self.tree_lics.column("link", width=90, anchor="center")
+        self.tree_lics.bind("<Double-1>", self._on_tree_lics_double_click)
+        self.configurar_menu_contexto()
+        self.tree_lics.tag_configure("status_favorita", foreground="#10b981")
+        self.tree_lics.tag_configure("status_descartada", foreground="#6b7280")
+        self.tree_lics.tag_configure("status_normal", foreground="#f3f4f6")
         self.tree_lics.grid(row=0, column=0, sticky="nsew")
 
         sb = ctk.CTkScrollbar(tbl_frame, orientation="vertical", command=self.tree_lics.yview)
@@ -507,8 +521,195 @@ class PainelDashboard(ctk.CTkFrame):
         ctk.CTkLabel(card_dicas, text="⚡  Ações Rápidas & Atalhos", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 10))
 
         ctk.CTkButton(card_dicas, text="📄  Adicionar Pregão / Dispensa", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["cyan_primary"], text_color="#000000", hover_color=COR["cyan_hover"], height=38, command=lambda: self.app.selecionar_aba("📄  Editais & Custos")).grid(row=1, column=0, sticky="ew", padx=16, pady=4)
-        ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["purple_accent"], text_color="#FFFFFF", height=38, command=lambda: self.app.selecionar_aba("🌐  Oportunidades PNCP")).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
+        ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["purple_accent"], text_color="#FFFFFF", height=38, command=self._buscar_no_pncp_bg).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
         ctk.CTkButton(card_dicas, text="🚀  Console de Lances ao Vivo", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["green_success"], text_color="#000000", height=38, command=lambda: self.app.selecionar_aba("⚡  Console da Sessão")).grid(row=3, column=0, sticky="ew", padx=16, pady=4)
+
+    def _criar_barra_filtros(self, parent_frame: Any) -> None:
+        frame_filtros = ctk.CTkFrame(parent_frame, fg_color="#111827")
+        frame_filtros.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 6))
+
+        ctk.CTkLabel(frame_filtros, text="Modalidade:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(10, 4), pady=6)
+        self.combo_modalidade = ctk.CTkComboBox(
+            frame_filtros, 
+            values=["Todas", "Dispensa Eletrônica", "Pregão Eletrônico"], 
+            state="readonly", 
+            width=160,
+            command=lambda e: self.aplicar_filtros()
+        )
+        self.combo_modalidade.set("Todas")
+        self.combo_modalidade.pack(side="left", padx=(0, 15), pady=6)
+
+        ctk.CTkLabel(frame_filtros, text="UF / Região:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
+        self.combo_uf = ctk.CTkComboBox(
+            frame_filtros, 
+            values=[
+                "Todas as UFs", 
+                "Apenas TO (Local)", 
+                "TO e Vizinhos (TO, GO, PA, MA, BA, MT, PI)", 
+                "Região Norte (TO, PA, AP, AM, RO, RR, AC)",
+                "SP", "MG", "RJ", "PR", "SC", "RS"
+            ], 
+            state="readonly", 
+            width=260,
+            command=lambda e: self.aplicar_filtros()
+        )
+        self.combo_uf.set("Todas as UFs")
+        self.combo_uf.pack(side="left", padx=(0, 15), pady=6)
+
+        ctk.CTkLabel(frame_filtros, text="Status:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
+        self.combo_status = ctk.CTkComboBox(
+            frame_filtros, 
+            values=["Ativas (Pendente + Favorita)", "Apenas Favoritas", "Pendentes", "Descartadas", "Todas"], 
+            state="readonly", 
+            width=200,
+            command=lambda e: self.aplicar_filtros()
+        )
+        self.combo_status.set("Ativas (Pendente + Favorita)")
+        self.combo_status.pack(side="left", padx=(0, 15), pady=6)
+
+        btn_recarregar = ctk.CTkButton(
+            frame_filtros, 
+            text="🔄 Atualizar", 
+            command=self.carregar_dados_dashboard,
+            fg_color="#374151", 
+            text_color="#f9fafb", 
+            font=ctk.CTkFont(size=11, weight="bold"), 
+            width=100
+        )
+        btn_recarregar.pack(side="right", padx=10, pady=6)
+
+    def configurar_menu_contexto(self) -> None:
+        import tkinter as tk
+        self.menu_contexto = tk.Menu(self.tree_lics, tearoff=0, bg="#1f2937", fg="#ffffff", activebackground="#374151", activeforeground="#00e5ff")
+        self.menu_contexto.add_command(label="⭐ Marcar como FAVORITA (Participar)", command=lambda: self.alterar_status_selecionado("FAVORITA"))
+        self.menu_contexto.add_command(label="❌ Marcar como DESCARTADA", command=lambda: self.alterar_status_selecionado("DESCARTADA"))
+        self.menu_contexto.add_command(label="🔄 Voltar para PENDENTE", command=lambda: self.alterar_status_selecionado("PENDENTE"))
+        self.menu_contexto.add_separator()
+        self.menu_contexto.add_command(label="🌐 Abrir Link do Edital no Navegador", command=lambda: self._on_tree_lics_double_click(None))
+
+        # Linux/Windows Botão 3
+        self.tree_lics.bind("<Button-3>", self.exibir_menu_contexto)
+
+    def exibir_menu_contexto(self, event: Any) -> None:
+        item_clicado = self.tree_lics.identify_row(event.y)
+        if item_clicado:
+            self.tree_lics.selection_set(item_clicado)
+            self.menu_contexto.post(event.x_root, event.y_root)
+
+    def alterar_status_selecionado(self, novo_status: str) -> None:
+        selecionado = self.tree_lics.selection()
+        if not selecionado:
+            return
+
+        licitacao_id = selecionado[0]
+        try:
+            from supabase import create_client
+            import os
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            sb.table("licitacoes").update({"status_analise": novo_status.lower()}).eq("id", licitacao_id).execute()
+
+            if hasattr(self, "todas_licitacoes"):
+                for lic in self.todas_licitacoes:
+                    if str(lic.get("id")) == str(licitacao_id):
+                        lic["status_analise"] = novo_status.lower()
+                        break
+            
+            self.aplicar_filtros()
+        except Exception as e:
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Erro ao atualizar status", f"Falha ao persistir no Supabase:\n{str(e)}")
+
+    def aplicar_filtros(self) -> None:
+        if not hasattr(self, "todas_licitacoes"):
+            return
+            
+        mod_selecionada = self.combo_modalidade.get()
+        uf_selecionada = self.combo_uf.get()
+        status_selecionado = self.combo_status.get()
+
+        for item in self.tree_lics.get_children():
+            self.tree_lics.delete(item)
+
+        uf_vizinhos = ["TO", "GO", "PA", "MA", "BA", "MT", "PI"]
+        uf_norte = ["TO", "PA", "AP", "AM", "RO", "RR", "AC"]
+
+        total_hoje = 0
+        participando = 0
+
+        for lic in self.todas_licitacoes:
+            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
+            uf = (lic.get("uf") or "").upper().strip()
+            status = (lic.get("status_analise") or "PENDENTE").upper().strip()
+
+            if mod_selecionada != "Todas" and mod_selecionada.lower() not in modalidade_nome.lower():
+                continue
+
+            if uf_selecionada == "Apenas TO (Local)" and uf != "TO":
+                continue
+            elif uf_selecionada.startswith("TO e Vizinhos") and uf not in uf_vizinhos:
+                continue
+            elif uf_selecionada.startswith("Região Norte") and uf not in uf_norte:
+                continue
+            elif len(uf_selecionada) == 2 and uf != uf_selecionada:
+                continue
+
+            if status_selecionado == "Ativas (Pendente + Favorita)" and status not in ["PENDENTE", "FAVORITA"]:
+                continue
+            elif status_selecionado == "Apenas Favoritas" and status != "FAVORITA":
+                continue
+            elif status_selecionado == "Pendentes" and status != "PENDENTE":
+                continue
+            elif status_selecionado == "Descartadas" and status != "DESCARTADA":
+                continue
+
+            tag_status = "status_favorita" if status == "FAVORITA" else ("status_descartada" if status == "DESCARTADA" else "status_normal")
+            
+            sigla = "PE" if "Pregão" in modalidade_nome else ("Dispensa" if "Dispensa" in modalidade_nome else modalidade_nome)
+            numero = lic.get("numero_pregao", "S/N")
+            uasg = lic.get("numero_uasg", "S/ UASG")
+            pregao_formatado = f"{sigla} {numero} (UASG {uasg})"
+            
+            orgao_resumo = f"[{uf}] {lic.get('orgao_nome', '')[:25]} - {lic.get('objeto', '')[:45]}..."
+            valor_ou_itens = f"R$ {float(lic.get('valor_estimado') or 0):,.2f}"
+            
+            data_abertura = lic.get("data_abertura") or "Não informada"
+            if data_abertura and "T" in data_abertura and len(data_abertura) >= 16:
+                try:
+                    data_abertura = f"{data_abertura[8:10]}/{data_abertura[5:7]}/{data_abertura[0:4]} {data_abertura[11:16]}"
+                except:
+                    pass
+            
+            link = lic.get("link_edital", "Sem Link")
+            import uuid
+            lic_id = lic.get("id") or str(uuid.uuid4())
+
+            self.tree_lics.insert(
+                "", 
+                "end", 
+                iid=lic_id,
+                values=(pregao_formatado, orgao_resumo, valor_ou_itens, status, data_abertura, link),
+                tags=(tag_status,)
+            )
+            
+            total_hoje += 1
+            if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
+                participando += 1
+                
+        self.card_lics_ativas.atualizar(str(total_hoje))
+        self.card_liderando.atualizar(str(participando))
+
+    def _on_tree_lics_double_click(self, event: Any) -> None:
+        item = self.tree_lics.selection()
+        if not item:
+            return
+        vals = self.tree_lics.item(item[0], "values")
+        if len(vals) >= 6:
+            link = vals[5]
+            if link and link.startswith("http"):
+                import webbrowser
+                webbrowser.open(link)
 
     def atualizar_catalogo(self) -> None:
         for r in self.tree_lics.get_children():
@@ -526,48 +727,49 @@ class PainelDashboard(ctk.CTkFrame):
             descricao_exibicao = orgao_str if orgao_str != "Órgão Não Informado" else objeto_str
             qtd_itens = len(res.itens)
 
-            self.tree_lics.insert("", "end", values=(pregao_str, descricao_exibicao[:50], qtd_itens, "PRONTO"))
+            self.tree_lics.insert("", "end", values=(pregao_str, descricao_exibicao[:50], qtd_itens, "PRONTO", "-", "-"))
+
+    def _buscar_no_pncp_bg(self) -> None:
+        import buscador_pncp
+        
+        def worker():
+            try:
+                self.card_lics_ativas.atualizar("⏳", "Buscando...")
+                buscador_pncp.executar_varredura_completa()
+            except Exception as e:
+                logging.error(f"Erro na varredura PNCP: {e}")
+            finally:
+                self.after(0, self.carregar_dados_dashboard)
+                
+        threading.Thread(target=worker, daemon=True).start()
 
     def carregar_dados_dashboard(self) -> None:
         """Busca licitações salvas no Supabase e popula a tabela no Dashboard."""
         try:
-            resposta = supabase.table("licitacoes")\
+            from supabase import create_client
+            import os
+            
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            
+            if not key:
+                logging.warning("[GUI] SUPABASE_KEY não configurada no ambiente.")
+                return
+                
+            sb = create_client(url, key)
+            
+            resposta = sb.table("licitacoes")\
                 .select("*")\
-                .order("criado_em", desc=True)\
-                .limit(50)\
+                .order("atualizado_em", desc=True)\
+                .limit(200)\
                 .execute()
                 
-            licitacoes = resposta.data or []
-            
-            for r in self.tree_lics.get_children():
-                self.tree_lics.delete(r)
-            
-            total_hoje = 0
-            participando = 0
-            
-            for lic in licitacoes:
-                numero = lic.get("numero_controle_pncp") or lic.get("id") or "N/D"
-                orgao_nome = lic.get("orgao_nome") or ""
-                orgao = f"{lic.get('uf', '')} - {orgao_nome[:35]}..."
-                status = lic.get("status_analise", "Pendente")
-                itens_count = lic.get("qtd_itens", 1)
-                
-                self.tree_lics.insert("", "end", values=(
-                    numero,
-                    orgao,
-                    itens_count,
-                    status.upper()
-                ))
-                
-                total_hoje += 1
-                if status.lower() in ["proposta_enviada", "em_disputa", "ativo"]:
-                    participando += 1
-                    
-            self.card_lics_ativas.atualizar(str(total_hoje))
-            self.card_liderando.atualizar(str(participando))
+            self.todas_licitacoes = resposta.data or []
+            self.aplicar_filtros()
+            logging.info(f"[GUI] {len(self.todas_licitacoes)} licitações carregadas com sucesso do Supabase!")
             
         except Exception as e:
-            logging.error(f"Erro ao carregar dados do Supabase no Dashboard: {e}")
+            logging.error(f"[GUI] Erro ao carregar dados do Supabase no Dashboard: {e}")
 
 
 # ─── PAINEL 2: EDITAIS & CUSTOS (MULTI-CERTAME) ────────────────────────────────

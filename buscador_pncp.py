@@ -1,77 +1,178 @@
 """
 Módulo: buscador_pncp.py
-Finalidade: Coleta contínua de Dispensas e Pregões abertos no PNCP
-alinhados aos CNAEs da JRBC TECH e gravação no Supabase.
+Finalidade: Rastreio nacional no PNCP, persistência no Supabase e alertas no Telegram.
+JRBC TECH - CNPJ: 65.488.003/0001-61
 """
 
 import os
+import sys
 import time
+import json
+import html
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - [%(levelname)s] - %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger("BuscadorPNCP")
 
-# Configurações Supabase
+# Supabase
 SUPABASE_URL = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-if not SUPABASE_KEY:
-    logging.warning("SUPABASE_KEY não encontrada. Os dados não serão persistidos no banco.")
-    supabase = None
-else:
+supabase: Client | None = None
+if SUPABASE_KEY:
     try:
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        logging.info("Conexão com Supabase estabelecida com sucesso.")
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        logger.info("Conexão com Supabase validada.")
     except Exception as e:
-        logging.error(f"Falha ao conectar no Supabase: {e}")
-        supabase = None
+        logger.error(f"Falha ao conectar no Supabase: {e}")
+else:
+    logger.warning("SUPABASE_KEY ausente. Os dados não serão salvos no banco.")
 
-# Cabeçalho padrão para o PNCP
-HEADERS = {
+# Telegram
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+CACHE_DIR = Path(__file__).resolve().parent / "data"
+CACHE_FILE = CACHE_DIR / "certames_notificados.json"
+
+HEADERS_PNCP = {
     "User-Agent": "JRBC-Tech-Licitacoes/2.0 (suporte@jrbctech.com.br)",
     "Accept": "application/json"
 }
 
-# Palavras-chave mapeadas pelo CCMEI (Serviços e Produtos)
 TERMOS_CNAE = [
-    # CNAE 9511-8/00 e 9512-6/00 - Manutenção e Suporte TI
     "manutenção de computadores",
     "manutenção de microcomputadores",
     "suporte técnico de ti",
     "help desk",
     "service desk",
     "field service",
-    
-    # CNAE 6190-6/99 - Redes e Telecomunicações
     "cabeamento estruturado",
     "instalação de rede lógica",
-    
-    # CNAE 7733-1/00 - Locação de Equipamentos
     "locação de computadores",
     "locação de impressoras",
-    
-    # CNAE 4751-2/01 e 4751-2/02 - Suprimentos e Peças
     "recarga de cartuchos",
     "toners e cartuchos",
     "peças de informática"
 ]
 
+def carregar_historico_notificados() -> set:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not CACHE_FILE.exists():
+        return set()
+    try:
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            dados = json.load(f)
+            return set(dados.get("notificados", []))
+    except Exception:
+        return set()
+
+def salvar_historico_notificados(notificados: set):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "notificados": list(notificados),
+                "ultima_atualizacao": datetime.now().isoformat()
+            }, f, indent=2)
+    except Exception as e:
+        logger.error(f"Falha ao salvar cache de notificações: {e}")
+
 def formatar_link_pncp(cnpj: str, ano: str, sequencial: str) -> str:
-    """Monta a URL pública canônica para abertura no navegador."""
     cnpj_limpo = "".join(filter(str.isdigit, str(cnpj)))
-    return f"https://pncp.gov.br/app/editais/{cnpj_limpo}/{ano}/{sequencial}"
+    if cnpj_limpo and ano and sequencial:
+        return f"https://pncp.gov.br/app/editais/{cnpj_limpo}/{ano}/{sequencial}"
+    return "https://pncp.gov.br"
+
+def enviar_alerta_telegram(payload: dict) -> bool:
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    orgao = html.escape(str(payload.get("orgao_nome") or "Órgão Público"))
+    uf = str(payload.get("uf") or "BR").upper()
+    municipio = html.escape(str(payload.get("municipio") or ""))
+    localidade = f"{municipio} - {uf}" if municipio and municipio != "Nacional" else uf
+    uasg = html.escape(str(payload.get("numero_uasg") or "S/ UASG"))
+    modalidade = html.escape(str(payload.get("modalidade") or "Licitação"))
+    num_processo = html.escape(str(payload.get("numero_pregao") or "S/N"))
+    
+    objeto_raw = str(payload.get("objeto") or "Sem descrição")
+    objeto = html.escape(objeto_raw[:350])
+    
+    valor_total = float(payload.get("valor_estimado") or 0.0)
+    link_edital = payload.get("link_edital") or "https://pncp.gov.br"
+
+    tipo = payload.get("tipo_contratacao", "SERVICO")
+    eh_servico = (tipo == "SERVICO")
+    icone = "🛠" if eh_servico else "📦"
+    margem = 50.0 if eh_servico else 30.0
+    fator_piso = 0.50 if eh_servico else 0.70
+    piso = valor_total * fator_piso if valor_total > 0 else 0.0
+    tag_tipo = "#SERVICO" if eh_servico else "#PRODUTO"
+    tag_mod = "#DISPENSA" if "dispensa" in modalidade.lower() else "#PREGAO"
+    
+    tag_uf = "#TOCANTINS" if uf == "TO" else "#GOIAS" if uf == "GO" else f"#{uf}"
+
+    data_abertura = payload.get("data_abertura") or ""
+    if "T" in str(data_abertura):
+        try:
+            dt = datetime.fromisoformat(str(data_abertura).replace("Z", "+00:00"))
+            data_abertura_fmt = dt.strftime("%d/%m/%Y às %H:%M")
+        except Exception:
+            data_abertura_fmt = html.escape(str(data_abertura))
+    else:
+        data_abertura_fmt = html.escape(str(data_abertura or "Consulte o edital"))
+
+    texto = (
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"🏛 **{orgao.upper()}**\n"
+        f"📍 {localidade} | **UASG:** {uasg}\n"
+        f"📋 **{modalidade} nº {num_processo}**\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "📝 **OBJETO DA CONTRATAÇÃO:**\n"
+        f"*{objeto}...*\n\n"
+        "💰 **ANÁLISE DE MARGEM (JRBC TECH):**\n"
+        f"• **Valor Estimado Edital:** R$ {valor_total:,.2f}\n"
+        f"• **Classificação:** {icone} {tipo}\n"
+        f"• **Margem Alvo Líquida:** {margem:.0f}%\n"
+        f"• **Piso de Lance Seguro:** R$ {piso:,.2f}\n\n"
+        f"📅 **ABERTURA DA SESSÃO:**\n{data_abertura_fmt}\n\n"
+        f"🏷 {tag_uf} {tag_mod} #TI {tag_tipo}\n"
+    )
+
+    url_api = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    body = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": texto,
+        "parse_mode": "HTML",
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "📄 Abrir no PNCP", "url": link_edital},
+                    {"text": "🏛 Portal Compras.gov", "url": "https://www.gov.br/compras"}
+                ]
+            ]
+        }
+    }
+    try:
+        r = requests.post(url_api, json=body, timeout=12)
+        return r.status_code == 200
+    except Exception as e:
+        logger.error(f"Erro ao enviar Telegram: {e}")
+        return False
 
 def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
-    """
-    Consulta o endpoint de pesquisa de editais do PNCP.
-    modalidade 8 = Dispensa de Licitação (Lei 14.133)
-    modalidade 6 = Pregão Eletrônico
-    """
     url = "https://pncp.gov.br/api/search/"
     params = {
         "q": termo,
@@ -83,60 +184,47 @@ def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
         "status": "aberto"
     }
 
-    try:
-        res = requests.get(url, params=params, headers=HEADERS, timeout=30)
-        if res.status_code == 200:
-            dados = res.json()
-            return dados.get("items", []) or dados.get("data", [])
-        elif res.status_code == 429:
-            logging.warning("PNCP retornou Rate Limit (HTTP 429). Aguardando 5 segundos...")
-            time.sleep(5)
-        else:
-            logging.error(f"Erro {res.status_code} na consulta do termo '{termo}'")
-    except requests.RequestException as e:
-        logging.error(f"Exceção de rede no PNCP para '{termo}': {e}")
-        
+    for tentativa in range(3):
+        try:
+            res = requests.get(url, params=params, headers=HEADERS_PNCP, timeout=30)
+            if res.status_code == 200:
+                dados = res.json()
+                return dados.get("items", []) or dados.get("data", [])
+            elif res.status_code == 429:
+                logger.warning("Rate limit no PNCP. Aguardando 4s...")
+                time.sleep(4)
+            else:
+                logger.warning(f"PNCP status {res.status_code} para '{termo}'.")
+                time.sleep(2)
+        except requests.RequestException as e:
+            logger.error(f"Falha de rede ao buscar '{termo}': {e}")
+            time.sleep(2)
     return []
 
-def extrair_itens_edital(cnpj: str, ano: str, sequencial: str) -> list[dict]:
-    """
-    Consulta a API de itens da contratação direta conforme Swagger oficial:
-    GET /api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencialCompra}/itens
-    """
-    cnpj_limpo = "".join(filter(str.isdigit, str(cnpj)))
-    url = f"https://pncp.gov.br/api/consulta/v1/orgaos/{cnpj_limpo}/compras/{ano}/{sequencial}/itens"
+def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, notificados: set):
+    cnpj = edital.get("orgao_cnpj") or edital.get("cnpj") or edital.get("orgaoEntidade", {}).get("cnpj", "")
+    ano = edital.get("anoCompra") or edital.get("ano", datetime.now().year)
+    seq = edital.get("sequencialCompra") or edital.get("sequencial") or edital.get("numero_sequencial", "1")
+    num_compra = edital.get("numeroCompra") or edital.get("numero")
     
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=20)
-        if res.status_code == 200:
-            return res.json() or []
-    except Exception:
-        pass
-    return []
-
-def salvar_no_supabase(edital: dict, termo: str, modalidade_nome: str):
-    """Insere ou atualiza o certame na tabela 'licitacoes'."""
-    if not supabase:
-        return
-
-    cnpj = edital.get("orgao_cnpj") or edital.get("cnpj", "")
-    ano = edital.get("ano", datetime.now().year)
-    seq = edital.get("numero_sequencial") or edital.get("sequencial", "1")
     numero_controle = edital.get("numero_controle_pncp") or f"{cnpj}-{ano}-{seq}"
+    codigo_unidade = edital.get("unidadeOrgao", {}).get("codigoUnidade") or "S/ UASG"
+    numero_compra_fmt = f"{num_compra}/{ano}" if num_compra else "S/N"
+    data_abertura = edital.get("dataAberturaProposta") or edital.get("dataEncerramentoProposta") or None
     
-    link_edital = formatar_link_pncp(cnpj, ano, seq)
-    
-    # Classificação inicial do tipo de certame
+    link_edital = edital.get("linkSistemaOrigem") or formatar_link_pncp(cnpj, str(ano), str(seq))
     tipo = "PRODUTO" if any(p in termo.lower() for p in ["toner", "peça", "cartucho", "suprimento"]) else "SERVICO"
 
     payload = {
         "numero_controle_pncp": numero_controle,
+        "numero_uasg": codigo_unidade,
+        "numero_pregao": numero_compra_fmt,
         "objeto": edital.get("objeto") or edital.get("description", "Sem descrição"),
         "orgao_nome": edital.get("orgao_nome") or edital.get("orgao_razao_social", "Órgão Público"),
         "uf": edital.get("uf", "BR"),
         "municipio": edital.get("municipio_nome", "Nacional"),
         "valor_estimado": edital.get("valor_global") or edital.get("valor_total_estimado", 0.0),
-        "data_abertura": edital.get("data_abertura_proposta") or edital.get("data_publicacao"),
+        "data_abertura": data_abertura,
         "link_edital": link_edital,
         "termo_busca": termo,
         "modalidade": modalidade_nome,
@@ -145,36 +233,46 @@ def salvar_no_supabase(edital: dict, termo: str, modalidade_nome: str):
         "atualizado_em": datetime.now(timezone.utc).isoformat()
     }
 
-    try:
-        supabase.table("licitacoes").upsert(
-            payload,
-            on_conflict="numero_controle_pncp"
-        ).execute()
-        logging.info(f"[{payload['uf']}] {modalidade_nome} gravada: {payload['orgao_nome'][:30]} | {link_edital}")
-    except Exception as e:
-        logging.error(f"Erro ao salvar licitação no Supabase: {e}")
+    # 1. Salva no Supabase
+    if supabase:
+        try:
+            supabase.table("licitacoes").upsert(
+                payload,
+                on_conflict="numero_controle_pncp"
+            ).execute()
+            logger.info(f"[{payload['uf']}] {modalidade_nome} salva: {payload['orgao_nome'][:30]}")
+        except Exception as e:
+            logger.error(f"Erro ao salvar no Supabase: {e}")
+
+    # 2. Envia para o Telegram (apenas inéditos)
+    if numero_controle not in notificados:
+        if enviar_alerta_telegram(payload):
+            logger.info(f"🔔 Alerta Telegram enviado: [{payload['uf']}] {numero_controle}")
+            notificados.add(numero_controle)
+            salvar_historico_notificados(notificados)
+            time.sleep(1)
 
 def executar_varredura_completa():
-    """Roda a rotina por todas as categorias e modalidades (Dispensas e Pregões)."""
-    logging.info("=== INICIANDO VARREDURA NACIONAL PNCP (JRBC TECH) ===")
+    logger.info("=== INICIANDO VARREDURA NACIONAL PNCP (JRBC TECH) ===")
+    notificados = carregar_historico_notificados()
     
-    # 1. Varre Dispensas de Licitação (Modalidade 8 - Prioridade MEI)
+    # Dispensas (Modalidade 8)
     for termo in TERMOS_CNAE:
-        logging.info(f"Buscando Dispensa: '{termo}'...")
+        logger.info(f"Buscando Dispensa: '{termo}'...")
         editais = buscar_contratacoes_pncp(termo, modalidade=8)
         for ed in editais:
-            salvar_no_supabase(ed, termo, "Dispensa Eletrônica")
-        time.sleep(1.2) # Respeito ao rate limit
+            processar_e_salvar_edital(ed, termo, "Dispensa Eletrônica", notificados)
+        time.sleep(1.5)
 
-    # 2. Varre Pregões Eletrônicos (Modalidade 6)
-    for termo in TERMOS_CNAE[:4]: # Foco nos principais de serviços de TI
-        logging.info(f"Buscando Pregão: '{termo}'...")
+    # Pregões (Modalidade 6)
+    for termo in TERMOS_CNAE[:5]:
+        logger.info(f"Buscando Pregão: '{termo}'...")
         editais = buscar_contratacoes_pncp(termo, modalidade=6)
         for ed in editais:
-            salvar_no_supabase(ed, termo, "Pregão Eletrônico")
-        time.sleep(1.2)
+            processar_e_salvar_edital(ed, termo, "Pregão Eletrônico", notificados)
+        time.sleep(1.5)
 
-    logging.info("=== VARREDURA FINALIZADA COM SUCESSO ===")
+    logger.info("=== VARREDURA FINALIZADA COM SUCESSO ===")
 
 if __name__ == "__main__":
     executar_varredura_completa()

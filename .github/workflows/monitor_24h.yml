@@ -28,10 +28,12 @@ jobs:
 
       - name: Executar varredura do PNCP e envio de alertas
         env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python scripts/monitor_nuvem.py
+          python buscador_pncp.py
 
       - name: Persistir histórico de deduplicação no Git
         run: |
