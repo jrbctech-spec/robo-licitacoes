@@ -29,8 +29,9 @@ import re
 
 from supabase import create_client
 try:
-    SUPABASE_URL = "https://szphoxostihnpcovyzvx.supabase.co"
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "SUA_CHAVE_SUPABASE")
+    # Pega da variável de ambiente OU usa a URL padrão oficial da JRBC TECH
+    SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://szphoxostihnpcovyzvx.supabase.co"
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     logging.warning(f"Não foi possível inicializar o cliente Supabase globalmente: {e}")

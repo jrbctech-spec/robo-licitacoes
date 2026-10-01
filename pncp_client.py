@@ -236,29 +236,15 @@ def obter_arquivos_edital(
         logger.warning("Nenhum arquivo anexado encontrado para este certame no PNCP.")
         return []
 
-    pasta = Path(pasta_destino)
-    pasta.mkdir(parents=True, exist_ok=True)
+    # Alterado: Não baixa mais arquivos localmente (Mantém no Supabase/Memória)
     caminhos_baixados: list[str] = []
-
-    with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
-        for idx, arq in enumerate(arquivos, 1):
-            url_dl = arq.get("url") or arq.get("uri")
-            titulo = arq.get("titulo") or f"edital_pncp_{idx}.pdf"
-            if not titulo.lower().endswith(".pdf"):
-                titulo += ".pdf"
-
-            if url_dl:
-                nome_limpo = re.sub(r"[^\w\-.]", "_", titulo)
-                caminho_local = pasta / f"pncp_{cnpj_orgao}_{ano}_{sequencial}_{nome_limpo}"
-                try:
-                    r = get_com_retry(client, url_dl)
-                    r.raise_for_status()
-                    caminho_local.write_bytes(r.content)
-                    caminhos_baixados.append(str(caminho_local))
-                    logger.info(f"📥 PDF baixado do PNCP: {caminho_local.name}")
-                except Exception as exc:
-                    logger.warning(f"Falha ao baixar arquivo '{titulo}' do PNCP: {exc}")
-
+    
+    for idx, arq in enumerate(arquivos, 1):
+        url_dl = arq.get("url") or arq.get("uri")
+        if url_dl:
+            caminhos_baixados.append(url_dl)
+            logger.info(f"🔗 URL do anexo coletada: {url_dl}")
+            
     return caminhos_baixados
 
 
@@ -462,14 +448,8 @@ def minar_e_estruturar_certame(
     num_uasg = str(compra.get("unidadeOrgao", {}).get("codigoUnidade", cnpj_orgao[:6]))
     num_pregao = f"{sequencial}_{ano}"
 
-    # Formatar nome da pasta de forma padronizada: UASG_MODALIDADE_NUMERO
-    mod_tag = "DISPENSA" if modalidade == ModalidadePNCPEnum.DISPENSA_ELETRONICA else "PREGAO"
-    nome_pasta = f"UASG_{num_uasg}_{mod_tag}_{num_pregao}"
-    pasta_destino = Path(base_dir) / nome_pasta
-    pasta_destino.mkdir(parents=True, exist_ok=True)
-
-    # Download de anexos oficiais
-    arquivos_baixados = obter_arquivos_edital(cnpj_orgao, ano, sequencial, pasta_destino=pasta_destino)
+    # Download cancelado: Mantendo arquitetura cloud-first (URLs em memória/Supabase)
+    arquivos_baixados = obter_arquivos_edital(cnpj_orgao, ano, sequencial, pasta_destino=base_dir)
 
     # Extração de itens
     itens_certame: list[ItemCertamePNCP] = []

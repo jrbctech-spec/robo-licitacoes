@@ -12,9 +12,9 @@ from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Configurações do Supabase lendo variáveis de ambiente (necessário para o GitHub Actions)
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "SUA_SERVICE_ROLE_OU_ANON_KEY")
+# Pega da variável de ambiente OU usa a URL padrão oficial da JRBC TECH
+SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://szphoxostihnpcovyzvx.supabase.co"
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Termos-chave de TI para pesquisa
