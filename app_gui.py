@@ -1419,7 +1419,25 @@ class PainelServicos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
-        ctk.CTkLabel(self, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        ctk.CTkLabel(self, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
+        
+        from tkinter import ttk
+        tree_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        self.tree_servicos = ttk.Treeview(tree_frame, columns=("cidade", "uf", "distancia", "modalidade"), show="headings", height=8)
+        self.tree_servicos.heading("cidade", text="🏙️ Cidade/Município")
+        self.tree_servicos.heading("uf", text="UF")
+        self.tree_servicos.heading("distancia", text="🛣️ Distância de Palmas (km)")
+        self.tree_servicos.heading("modalidade", text="Modalidade Atend.")
+        self.tree_servicos.column("uf", width=50, anchor="center")
+        self.tree_servicos.column("distancia", width=180, anchor="center")
+        self.tree_servicos.pack(fill="both", expand=True)
+
+        # Mock Data load para visualização
+        self.tree_servicos.insert("", "end", values=("Gurupi", "TO", "440 km (Ida e Volta)", "Field Service"))
+        self.tree_servicos.insert("", "end", values=("Paraíso do Tocantins", "TO", "130 km (Ida e Volta)", "Field Service"))
+        self.tree_servicos.insert("", "end", values=("Nacional", "BR", "0 km", "100% Remoto"))
         
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
@@ -1480,8 +1498,23 @@ class PainelProdutos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
-        ctk.CTkLabel(self, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=20)
+        ctk.CTkLabel(self, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(pady=10)
         
+        from tkinter import ttk
+        tree_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        self.tree_produtos = ttk.Treeview(tree_frame, columns=("item", "custo", "frete", "margem"), show="headings", height=8)
+        self.tree_produtos.heading("item", text="💻 Produto / Periférico")
+        self.tree_produtos.heading("custo", text="💰 Custo Distribuidor")
+        self.tree_produtos.heading("frete", text="🚚 Frete CIF Estimado")
+        self.tree_produtos.heading("margem", text="📈 Margem Líquida")
+        self.tree_produtos.pack(fill="both", expand=True)
+
+        self.tree_produtos.insert("", "end", values=("SSD 480GB WD Green", "R$ 145,00", "R$ 15,00", "42% (Aprovado)"))
+        self.tree_produtos.insert("", "end", values=("Memória RAM 16GB DDR4", "R$ 180,00", "R$ 15,00", "35% (Aprovado)"))
+        self.tree_produtos.insert("", "end", values=("Toner Impressora Brother", "R$ 45,00", "R$ 22,00", "15% (Reprovado - Stop-Loss)"))
+
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
         
