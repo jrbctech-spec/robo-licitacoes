@@ -62,7 +62,6 @@ try:
         RegraItem,
     )
     from edital_parser import (
-        EditalParser,
         ItemEdital,
         ResultadoEdital,
         SeveridadeRisco,
@@ -1010,8 +1009,7 @@ class PainelEditais(ctk.CTkFrame):
             messagebox.showinfo("Sucesso", "Regra de lance salva na nuvem!")
         except Exception as e:
             import tkinter.messagebox as messagebox
-            messagebox.showerror("Erro", f"Falha ao salvar no Supabase:
-{e}")
+            messagebox.showerror("Erro", f"Falha ao salvar no Supabase:\\n{e}")
 
     def _on_editar_item_custo(self, event: Any) -> None:
         selected = self.tree_itens.selection()
@@ -1022,8 +1020,7 @@ class PainelEditais(ctk.CTkFrame):
         vals = self.tree_itens.item(lic_id, "values")
         
         import os
-        dialog = ctk.CTkInputDialog(text=f"Digite o novo Custo Real para o item 1:
-Atual: {vals[5]}", title="Editar Custo")
+        dialog = ctk.CTkInputDialog(text=f"Digite o novo Custo Real para o item 1:\\nAtual: {vals[5]}", title="Editar Custo")
         novo_custo = dialog.get_input()
         
         if novo_custo:
@@ -1043,8 +1040,7 @@ Atual: {vals[5]}", title="Editar Custo")
                 messagebox.showinfo("Atualizado", "Custo e Stop-Loss recalcuados e salvos!")
             except Exception as e:
                 import tkinter.messagebox as messagebox
-                messagebox.showerror("Erro", f"Falha:
-{e}")
+                messagebox.showerror("Erro", f"Falha:\\n{e}")
 
 # ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
 class TkinterLogHandler(logging.Handler):

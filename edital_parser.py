@@ -94,3 +94,63 @@ def realizar_leitura_tr(url_pdf: str) -> dict:
     except Exception as e:
         logging.error(f"❌ Erro na Etapa 2 de Leitura do TR: {e}")
         return {"erro": str(e)}
+
+from dataclasses import dataclass, field
+from typing import Optional, List, Any
+from enum import Enum
+
+class SeveridadeRisco(Enum):
+    BAIXA = 1
+    MEDIA = 2
+    ALTA = 3
+    CRITICA = 4
+
+@dataclass
+class ItemEdital:
+    numero_item: int
+    descricao: str
+    unidade_medida: str = "UN"
+    quantidade: int = 1
+    valor_referencia: Optional[float] = None
+    tipo_item: str = "produto"
+    custo_real: Optional[float] = None
+    piso_preco: Optional[float] = None
+
+@dataclass
+class ResultadoEdital:
+    caminho_pdf: str
+    itens: List[ItemEdital] = field(default_factory=list)
+    numero_pregao: Optional[str] = None
+    uasg: Optional[str] = None
+    esfera: Optional[str] = None
+    erros_parsing: List[str] = field(default_factory=list)
+
+from dataclasses import dataclass, field
+from typing import Optional, List, Any
+from enum import Enum
+
+class SeveridadeRisco(Enum):
+    BAIXA = 1
+    MEDIA = 2
+    ALTA = 3
+    CRITICA = 4
+
+@dataclass
+class ItemEdital:
+    numero_item: int
+    descricao: str
+    unidade_medida: str = "UN"
+    quantidade: int = 1
+    valor_referencia: Optional[float] = None
+    tipo_item: str = "produto"
+    custo_real: Optional[float] = None
+    piso_preco: Optional[float] = None
+
+@dataclass
+class ResultadoEdital:
+    caminho_pdf: str
+    itens: List[ItemEdital] = field(default_factory=list)
+    numero_pregao: Optional[str] = None
+    uasg: Optional[str] = None
+    esfera: Optional[str] = None
+    erros_parsing: List[str] = field(default_factory=list)
