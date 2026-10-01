@@ -3,6 +3,7 @@ Módulo: buscador_pncp.py
 Objetivo: Rastrear editais em todo o Brasil para serviços de TI e Help Desk/Field Service.
 """
 
+import os
 import time
 import logging
 from datetime import datetime, date
@@ -11,9 +12,9 @@ from supabase import create_client, Client
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Configurações do Supabase
-SUPABASE_URL = "https://szphoxostihnpcovyzvx.supabase.co"
-SUPABASE_KEY = "SUA_SERVICE_ROLE_OU_ANON_KEY"
+# Configurações do Supabase lendo variáveis de ambiente (necessário para o GitHub Actions)
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "SUA_SERVICE_ROLE_OU_ANON_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Termos-chave de TI para pesquisa
