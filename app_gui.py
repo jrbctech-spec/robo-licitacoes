@@ -1424,9 +1424,57 @@ class PainelServicos(ctk.CTkFrame):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
         
-        ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", command=lambda: print("Analisando TR com LLM...")).grid(row=0, column=0, padx=10)
-        ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=lambda: print("Calculando Logística...")).grid(row=0, column=1, padx=10)
-        ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=lambda: print("Gerando Planilha...")).grid(row=0, column=2, padx=10)
+        ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", command=self.ver_escopo_tr).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=self.calcular_sla).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=self.gerar_excel).grid(row=0, column=2, padx=10)
+
+    def ver_escopo_tr(self):
+        from tkinter import messagebox, simpledialog
+        from edital_parser import realizar_leitura_tr
+        url = simpledialog.askstring("Escopo TR", "Digite a URL pública do PDF do Termo de Referência no PNCP:")
+        if not url: return
+        res = realizar_leitura_tr(url)
+        if "erro" in res:
+            messagebox.showerror("Erro", f"Falha na IA: {res['erro']}")
+        else:
+            msg = f"📍 Atendimento: {res.get('atendimento')}\n🏙️ Cidade: {res.get('cidade')}\n🔧 Escopo: {res.get('pecas_inclusas')}"
+            messagebox.showinfo("Resultado IA (Gemini)", msg)
+            
+    def calcular_sla(self):
+        from tkinter import messagebox, simpledialog
+        from calculadora_logistica import calcular_custo_deslocamento
+        cidade = simpledialog.askstring("Logística", "Para qual cidade no TO a equipe vai se deslocar?")
+        if not cidade: return
+        res = calcular_custo_deslocamento(cidade, "TO")
+        msg = f"🛣️ Modalidade: {res['modalidade']}\n📏 Distância Total Estimada (Ida e Volta): {res['distancia_total_km']} km\n⛽ Custo Combustível: R$ {res['custo_combustivel']}\n🏨 Custo Diárias: R$ {res['custo_diarias']}\n💰 Custo Total Logístico: R$ {res['custo_total_logistica']}"
+        messagebox.showinfo("SLA / Logística - Partindo de Palmas/TO", msg)
+
+    def gerar_excel(self):
+        from tkinter import messagebox
+        from gerador_planilha_servicos import exportar_pregao_servico_excel
+        # Dados moficados (aprovados) como exemplo simulando que a licitação passou pelos crivos
+        dados_lic = {
+            "orgao_nome": "Tribunal de Exemplo - TO",
+            "numero_edital": "05/2026",
+            "municipio": "Gurupi",
+            "uf": "TO",
+            "link_edital": "https://pncp.gov.br",
+            "valor_referencia": 38500.00
+        }
+        analise = {
+            "custo_total": 12500.00,
+            "piso_minimo": 16250.00,
+            "margem_pct": 208.00,
+            "lucro_projetado": 26000.00,
+            "distancia_km": 440,
+            "custo_transporte": 272.80,
+            "custo_diarias": 250.00,
+            "tipo_atendimento": "Presencial / Field Service",
+            "equipe": [{"nome": "Técnico Infra (N2)", "horas": 40, "funcao": "Manutenção Preventiva"}],
+            "ferramentas": [{"item": "Notebook I7", "finalidade": "Testes e Config", "status": "Próprio"}]
+        }
+        caminho = exportar_pregao_servico_excel(dados_lic, analise)
+        messagebox.showinfo("Excel Gerado", f"Sucesso! Planilha executiva com detalhes operacionais e formação de preço foi salva em:\n\n{caminho}")
 
 class PainelProdutos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
