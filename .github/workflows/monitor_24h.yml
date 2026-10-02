@@ -25,6 +25,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; else pip install requests pydantic python-dotenv; fi
+          python -m playwright install --with-deps chromium
 
       - name: Executar varredura do PNCP e envio de alertas
         env:
