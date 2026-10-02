@@ -1906,10 +1906,12 @@ class PainelServicos(ctk.CTkFrame):
             import threading
             import tkinter.messagebox as messagebox
             from buscador_pncp import executar_varredura_tocantins
+            from monitor_siga_compra_direta import executar_varredura_siga
             def worker():
                 executar_varredura_tocantins()
+                executar_varredura_siga()
                 self.after(0, self.carregar_servicos_nuvem)
-                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Tocantins concluída! A tabela foi atualizada."))
+                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Tocantins e SIGA concluídas! A tabela foi atualizada."))
             threading.Thread(target=worker, daemon=True).start()
             
         btn_start_to = ctk.CTkButton(header_frame, text="⚡ START / BUSCAR TOCANTINS", fg_color="#10b981", command=_iniciar_busca_to_serv)
