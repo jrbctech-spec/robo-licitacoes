@@ -1225,9 +1225,15 @@ class PainelSessao(ctk.CTkFrame):
         self.tree_sessao.column("status_pill", width=150, anchor="center")
         self.tree_sessao.pack(fill="x", expand=True)
 
+        # Container Inferior: Log + Chat Copiloto
+        bottom_frame = ctk.CTkFrame(self, fg_color="transparent")
+        bottom_frame.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
+        bottom_frame.grid_rowconfigure(0, weight=1)
+        bottom_frame.grid_columnconfigure((0, 1), weight=1)
+
         # Terminal Log Stream
-        card_log = CardFrame(self)
-        card_log.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
+        card_log = CardFrame(bottom_frame)
+        card_log.grid(row=0, column=0, sticky="nsew", padx=(0, 5), pady=0)
         card_log.grid_rowconfigure(1, weight=1)
         card_log.grid_columnconfigure(0, weight=1)
 
@@ -1259,6 +1265,74 @@ class PainelSessao(ctk.CTkFrame):
             text_color=COR["text_primary"],
         )
         self.txt_log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+
+        # Copiloto Tático Gemini
+        card_copiloto = CardFrame(bottom_frame)
+        card_copiloto.grid(row=0, column=1, sticky="nsew", padx=(5, 0), pady=0)
+        card_copiloto.grid_rowconfigure(1, weight=1)
+        card_copiloto.grid_columnconfigure(0, weight=1)
+
+        copiloto_header = ctk.CTkFrame(card_copiloto, fg_color="transparent")
+        copiloto_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(8, 2))
+        copiloto_header.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            copiloto_header,
+            text="🤖  Copiloto Tático Gemini (Ao Vivo)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color="#00E5FF",
+        ).grid(row=0, column=0, sticky="w")
+
+        self.txt_chat = ctk.CTkTextbox(
+            card_copiloto,
+            font=ctk.CTkFont(family="Consolas", size=12),
+            fg_color="#181A20",
+            text_color="#FFFFFF",
+            state="disabled",
+            wrap="word",
+        )
+        self.txt_chat.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 6))
+
+        chat_bottom = ctk.CTkFrame(card_copiloto, fg_color="transparent")
+        chat_bottom.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+        chat_bottom.grid_columnconfigure(0, weight=1)
+
+        self.txt_mensagem = ctk.CTkEntry(
+            chat_bottom,
+            placeholder_text="Pergunte algo ao Gemini ou peça conselho...",
+        )
+        self.txt_mensagem.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.txt_mensagem.bind("<Return>", lambda e: self._enviar_mensagem_copiloto())
+
+        self.btn_enviar_chat = ctk.CTkButton(
+            chat_bottom,
+            text="💬 Enviar",
+            width=80,
+            command=self._enviar_mensagem_copiloto,
+            fg_color=COR["blue_accent"],
+        )
+        self.btn_enviar_chat.grid(row=0, column=1)
+
+        chat_actions = ctk.CTkFrame(card_copiloto, fg_color="transparent")
+        chat_actions.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        
+        self.btn_analisar = ctk.CTkButton(
+            chat_actions,
+            text="⚡ Analisar Situação",
+            height=28,
+            command=lambda: self._enviar_mensagem_copiloto("Analise a situação atual da disputa e sugira o próximo passo."),
+            fg_color=COR["bg_card_hover"],
+        )
+        self.btn_analisar.pack(side="left", padx=(0, 6), expand=True, fill="x")
+
+        self.btn_inexequibilidade = ctk.CTkButton(
+            chat_actions,
+            text="⚖️ Checar Inexequibilidade",
+            height=28,
+            command=lambda: self._enviar_mensagem_copiloto("Os lances atuais são inexequíveis segundo o edital ou a Lei 14.133?"),
+            fg_color=COR["bg_card_hover"],
+        )
+        self.btn_inexequibilidade.pack(side="left", padx=(6, 0), expand=True, fill="x")
 
     def _on_modo_switch(self) -> None:
         dry_run = bool(self.sw_modo.get())
@@ -1415,6 +1489,7 @@ class PainelSessao(ctk.CTkFrame):
                 licitacao_id=lic.get("numero_pregao", ""),
                 callback_ciclo=self._on_ciclo_update,
             )
+            self._bot.callback_copiloto = self._trigger_copiloto_auto
         except Exception as exc:
             messagebox.showerror("Erro ao Configurar Robô", f"Falha ao inicializar motor: {exc}")
             return
@@ -1525,6 +1600,69 @@ class PainelSessao(ctk.CTkFrame):
         t_str = time.strftime("%H:%M:%S")
         self.txt_log.insert("end", f"[{t_str}] {msg}\n")
         self.txt_log.see("end")
+
+    def _trigger_copiloto_auto(self, evento: str) -> None:
+        self.after(0, lambda: self._enviar_mensagem_copiloto(f"Evento detectado: {evento}. Analise rapidamente."))
+
+    def _adicionar_chat(self, msg: str, cor: str) -> None:
+        self.txt_chat.configure(state="normal")
+        t_str = time.strftime("%H:%M:%S")
+        tag_name = f"tag_{cor.replace('#', '')}"
+        
+        self.txt_chat.tag_config(tag_name, foreground=cor)
+        
+        start_idx = self.txt_chat.index("end-1c")
+        self.txt_chat.insert("end", f"[{t_str}] {msg}\n\n")
+        end_idx = self.txt_chat.index("end-1c")
+        
+        self.txt_chat.tag_add(tag_name, start_idx, end_idx)
+        self.txt_chat.configure(state="disabled")
+        self.txt_chat.see("end")
+
+    def _enviar_mensagem_copiloto(self, msg_manual: str = "") -> None:
+        msg = msg_manual or self.txt_mensagem.get().strip()
+        if not msg:
+            return
+            
+        if not msg_manual:
+            self.txt_mensagem.delete(0, "end")
+            
+        self._adicionar_chat(f"Operador: {msg}", "#10B981") # Verde
+        
+        # Coleta estado do pregao
+        estado = {
+            "orgao": self.cmb_disputa.get() if self.cmb_disputa.get() != "(Nenhum pregão)" else "Desconhecido",
+            "item": "Itens atuais",
+            "meu_lance": "N/A",
+            "melhor_lance": "N/A",
+            "stop_loss": "N/A",
+            "posicao": "N/A",
+            "tempo_status": "Em andamento",
+            "chat_pregoeiro": "Sem mensagens recentes"
+        }
+        
+        if self._bot and getattr(self._bot.motor, "_estados", None):
+            for item_id, st in self._bot.motor._estados.items():
+                if st.estado_pagina.nossa_posicao:
+                    estado["item"] = f"Item {st.regra.numero_item} - {st.regra.descricao[:30]}..."
+                    estado["meu_lance"] = f"{st.estado_pagina.nosso_ultimo_lance}"
+                    estado["melhor_lance"] = f"{st.estado_pagina.melhor_lance_mercado}"
+                    estado["stop_loss"] = f"{st.regra.preco_minimo}"
+                    estado["posicao"] = f"{st.estado_pagina.nossa_posicao}"
+                    break
+        
+        self._adicionar_chat("🤖 Copiloto analisando o pregão...", "#94A3B8")
+        
+        import threading
+        from copiloto_gemini import consultar_copiloto
+        def worker():
+            try:
+                resposta = consultar_copiloto(estado, msg)
+                self.after(0, lambda: self._adicionar_chat(f"Copiloto: {resposta}", "#00E5FF")) # Ciano
+            except Exception as e:
+                self.after(0, lambda: self._adicionar_chat(f"Erro no Copiloto: {e}", "#FF5252"))
+                
+        threading.Thread(target=worker, daemon=True).start()
 
 
 

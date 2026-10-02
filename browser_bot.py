@@ -146,6 +146,8 @@ class BrowserBot:
         self._browser: Optional[Browser] = None
         self._rodando = False
         self._url_solicitada: Optional[str] = None
+        self.callback_copiloto: Optional[Callable[[str], None]] = None
+        self._ultimo_lider: dict[int, float] = {}
 
     def parar(self) -> None:
         """Solicita a interrupção segura do loop de monitoramento."""
@@ -495,6 +497,18 @@ class BrowserBot:
                     if estado_pag.intervalo_minimo and estado_pag.intervalo_minimo > 0:
                         if hasattr(self.motor, "_estados") and estado_pag.numero_item in self.motor._estados:
                             self.motor._estados[estado_pag.numero_item].regra.intervalo_minimo = estado_pag.intervalo_minimo
+
+                    # Trigger copiloto on leader change
+                    lider_antigo = self._ultimo_lider.get(estado_pag.numero_item)
+                    novo_lider = estado_pag.melhor_lance_mercado
+                    if novo_lider and lider_antigo and novo_lider < lider_antigo:
+                        if self.callback_copiloto:
+                            try:
+                                self.callback_copiloto(f"Concorrente reduziu o preço do Item {estado_pag.numero_item} para R$ {novo_lider:.2f}")
+                            except Exception:
+                                pass
+                    if novo_lider:
+                        self._ultimo_lider[estado_pag.numero_item] = novo_lider
 
                     # Calcula decisão
                     try:
