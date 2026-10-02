@@ -1902,6 +1902,20 @@ class PainelServicos(ctk.CTkFrame):
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
         ctk.CTkLabel(header_frame, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         
+        def _iniciar_busca_to_serv():
+            import threading
+            import tkinter.messagebox as messagebox
+            from buscador_pncp import executar_varredura_tocantins
+            def worker():
+                executar_varredura_tocantins()
+                self.after(0, self.carregar_servicos_nuvem)
+                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Tocantins concluída! A tabela foi atualizada."))
+            threading.Thread(target=worker, daemon=True).start()
+            
+        btn_start_to = ctk.CTkButton(header_frame, text="⚡ START / BUSCAR TOCANTINS", fg_color="#10b981", command=_iniciar_busca_to_serv)
+        btn_start_to.pack(side="right", padx=(10, 0))
+
+        
         btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_servicos_nuvem)
         btn_refresh.pack(side="right")
         

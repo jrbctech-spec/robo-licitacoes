@@ -244,6 +244,33 @@ def processar_outras_fontes(oportunidades, notificados):
                 salvar_historico_notificados(notificados)
                 time.sleep(1)
 
+
+def executar_varredura_tocantins():
+    logger.info("=== START: Varredura Exclusiva Tocantins (TO) ===")
+    notificados = carregar_historico_notificados()
+    try:
+        from pncp_client import buscar_publicacoes_pncp
+        for mod in [6, 8]:
+            res_to = buscar_publicacoes_pncp(uf="TO", codigo_modalidade=mod, tamanho_pagina=50)
+            itens_to = res_to.get("data", [])
+            for item in itens_to:
+                objeto = (item.get("objetoCompra") or "").lower()
+                # from pncp_client TERMOS_CNAE might be needed or we can import it
+                if any(t.lower() in objeto for t in TERMOS_CNAE):
+                    processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
+            time.sleep(1.5)
+    except Exception as e:
+        logger.error(f"Erro ao varrer PNCP TO: {e}")
+        
+    logger.info(">>> Varrendo NúcleoGov (Municípios do TO)...")
+    op_nucleo = varrer_municipios_nucleogov()
+    processar_outras_fontes(op_nucleo, notificados)
+    
+    logger.info(">>> Varrendo SIGA-TO (Governo do TO)...")
+    op_siga = varrer_siga_to()
+    processar_outras_fontes(op_siga, notificados)
+    logger.info("=== FIM: Varredura Tocantins ===")
+
 def executar_varredura_completa():
     logger.info("=== INICIANDO RADAR TRÍPLICE (JRBC TECH) ===")
     notificados = carregar_historico_notificados()
