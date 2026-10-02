@@ -16,12 +16,16 @@ def enviar_alerta_executivo(dados: dict) -> bool:
         return False
 
     esfera = dados.get("esfera", "FEDERAL")
-    if esfera == "ESTADUAL":
-        badge = "🌲 **[ESTADUAL - GOVERNO DO TOCANTINS / SIGA-TO]**"
+    portal = dados.get("portal", "")
+    
+    if portal == "COMPRAS_GOV":
+        badge = "🏛️ <b>[OPORTUNIDADE - COMPRAS.GOV.BR]</b>"
+    elif portal == "SIGA_TO" or esfera == "ESTADUAL":
+        badge = "🌴 <b>[OPORTUNIDADE DE SERVIÇO - SIGA TO]</b>"
     elif esfera == "MUNICIPAL":
-        badge = f"🏛 **[MUNICIPAL - TOCANTINS ({dados.get('distancia_palmas', 0)} km de Palmas)]**"
+        badge = f"🏛️ <b>[MUNICIPAL - TOCANTINS ({dados.get('distancia_palmas', 0)} km de Palmas)]</b>"
     else:
-        badge = "🇧🇷 **[FEDERAL / NACIONAL - PNCP]**"
+        badge = "🏛️ <b>[OPORTUNIDADE - COMPRAS.GOV.BR]</b>"
 
     orgao = html.escape(str(dados.get("orgao_nome", "Órgão Público")))
     modalidade = html.escape(str(dados.get("modalidade", "Dispensa")))

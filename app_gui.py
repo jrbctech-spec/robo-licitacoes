@@ -1902,21 +1902,37 @@ class PainelServicos(ctk.CTkFrame):
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
         ctk.CTkLabel(header_frame, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         
-        def _iniciar_busca_to_serv():
+        def _iniciar_siga_to():
+            import threading
+            import tkinter.messagebox as messagebox
+            from siga_to_monitor import SigaMonitor
+            import asyncio
+            def worker():
+                monitor = SigaMonitor()
+                asyncio.run(monitor.executar_varredura())
+                self.after(0, self.carregar_servicos_nuvem)
+                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do SIGA-TO concluída! A tabela foi atualizada."))
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _iniciar_ambos():
             import threading
             import tkinter.messagebox as messagebox
             from buscador_pncp import executar_varredura_tocantins
-            from monitor_siga_compra_direta import executar_varredura_siga
-            def worker():
+            from siga_to_monitor import SigaMonitor
+            import asyncio
+            def worker_ambos():
                 executar_varredura_tocantins()
-                executar_varredura_siga()
+                monitor = SigaMonitor()
+                asyncio.run(monitor.executar_varredura())
                 self.after(0, self.carregar_servicos_nuvem)
-                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Tocantins e SIGA concluídas! A tabela foi atualizada."))
-            threading.Thread(target=worker, daemon=True).start()
+                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Compras.gov (PNCP) e SIGA-TO concluídas! A tabela foi atualizada."))
+            threading.Thread(target=worker_ambos, daemon=True).start()
             
-        btn_start_to = ctk.CTkButton(header_frame, text="⚡ START / BUSCAR TOCANTINS", fg_color="#10b981", command=_iniciar_busca_to_serv)
-        btn_start_to.pack(side="right", padx=(10, 0))
+        btn_start_ambos = ctk.CTkButton(header_frame, text="🚀 MONITORAR AMBOS", fg_color="#F59E0B", command=_iniciar_ambos)
+        btn_start_ambos.pack(side="right", padx=(10, 0))
 
+        btn_start_to = ctk.CTkButton(header_frame, text="⚡ START / BUSCAR TOCANTINS", fg_color="#10b981", command=_iniciar_siga_to)
+        btn_start_to.pack(side="right", padx=(10, 0))
         
         btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_servicos_nuvem)
         btn_refresh.pack(side="right")

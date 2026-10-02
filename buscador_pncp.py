@@ -158,7 +158,8 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
         "modalidade": modalidade_nome,
         "tipo_contratacao": tipo,
         "status_analise": "pendente",
-        "atualizado_em": datetime.now(timezone.utc).isoformat()
+        "atualizado_em": datetime.now(timezone.utc).isoformat(),
+        "portal": "COMPRAS_GOV"
     }
 
     # --- Avaliação Geográfica ---
@@ -210,7 +211,8 @@ def processar_outras_fontes(oportunidades, notificados):
             "modalidade": item.get("modalidade"),
             "tipo_contratacao": "SERVICO",
             "status_analise": "pendente",
-            "atualizado_em": datetime.now(timezone.utc).isoformat()
+            "atualizado_em": datetime.now(timezone.utc).isoformat(),
+            "portal": "COMPRAS_GOV"
         }
         
         # --- Avaliação Geográfica ---
@@ -225,7 +227,8 @@ def processar_outras_fontes(oportunidades, notificados):
         
         # Inject for Telegram
         item["prioridade"] = payload["prioridade"]
-        item["piso_seguro"] = payload["piso_seguro"]
+        # item["piso_seguro"] = payload["piso_seguro"]
+        item["portal"] = "COMPRAS_GOV"
 
         if supabase:
             try:

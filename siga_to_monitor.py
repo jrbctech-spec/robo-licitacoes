@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional
 import requests
 from playwright.async_api import async_playwright
 
+from supabase_client import inserir_licitacao
+
 # Garante o carregamento do .env local
 try:
     from dotenv import load_dotenv
@@ -98,7 +100,7 @@ class TelegramDispatcher:
             return False
 
         mensagem_html = (
-            "💼 **[NOVA OPORTUNIDADE DE SERVIÇO - SIGA-TO]**\n"
+            "🌴 **[OPORTUNIDADE DE SERVIÇO - SIGA TO]**\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             f"🏢 **Órgão:** {orgao}\n"
             f"📄 **Processo:** `{numero_processo}`\n"
@@ -154,6 +156,35 @@ class SigaMonitor:
     def _salvar_vistos(self) -> None:
         with open(VISTOS_FILE, "w", encoding="utf-8") as f:
             json.dump(list(self.processos_vistos), f, ensure_ascii=False, indent=2)
+
+    def _salvar_supabase(self, num_proc: str, orgao: str, objeto: str, data_fim: str, link: str):
+        dados_licitacao = {
+            "numero_uasg": "SIGA-TO",  # Evita conflitos com UASGs numéricas
+            "numero_pregao": num_proc,
+            "orgao": orgao,
+            "objeto": objeto[:2000],
+            "modalidade": "Compra Direta Estadual (SIGA-TO)",
+            "uf": "TO",
+            "municipio": "Palmas/TO",
+            "link_sistema": link,
+            "status_analise": "pendente",
+            "portal": "SIGA_TO"
+        }
+        
+        # Tenta formatar data se for DD/MM/YYYY HH:MM
+        match_prazo = re.search(r'\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}', data_fim)
+        if match_prazo:
+            try:
+                dt = datetime.strptime(match_prazo.group(0), "%d/%m/%Y %H:%M")
+                dados_licitacao["data_fim_proposta"] = dt.isoformat()
+            except Exception:
+                pass
+                
+        try:
+            inserir_licitacao(dados_licitacao)
+            logger.info(f"💾 Compra SIGA {num_proc} salva no Supabase.")
+        except Exception as e:
+            logger.error(f"Erro ao salvar no Supabase: {e}")
 
     def classificar_objeto(self, texto: str) -> Optional[str]:
         """Avalia se o objeto corresponde a serviços de TI e não cai em blacklist."""
@@ -232,6 +263,7 @@ class SigaMonitor:
                             termo_encontrado=termo,
                         )
                         if enviado:
+                            self._salvar_supabase(num_proc, orgao, objeto, data_fim, link)
                             self.processos_vistos.add(num_proc)
                             novas_oportunidades += 1
 
@@ -272,6 +304,7 @@ class SigaMonitor:
                             termo_encontrado=termo,
                         )
                         if enviado:
+                            self._salvar_supabase(num_proc, orgao, objeto, data_fim, SIGA_ABERTAS_URL)
                             self.processos_vistos.add(num_proc)
                             novas_oportunidades += 1
 
