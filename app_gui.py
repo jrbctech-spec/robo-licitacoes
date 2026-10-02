@@ -439,6 +439,115 @@ class MetricCard(CardFrame):
         if subtitulo:
             self.lbl_sub.configure(text=subtitulo)
 
+def disable_mouse_scroll(combo):
+    try:
+        combo._canvas.unbind("<MouseWheel>")
+        combo._canvas.unbind("<Button-4>")
+        combo._canvas.unbind("<Button-5>")
+    except Exception:
+        pass
+
+class SearchableSelectPopup(ctk.CTkToplevel):
+    def __init__(self, master, values, on_select_callback, **kwargs):
+        super().__init__(master, **kwargs)
+        self.title("Selecionar Opção")
+        self.geometry("600x450")
+        self.transient(master)
+        self.grab_set()
+        
+        self.values = values
+        self.on_select_callback = on_select_callback
+        
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        
+        self.entry_search = ctk.CTkEntry(self, placeholder_text="🔎 Digite para filtrar (ex: TO, Palmas, Pregão)...")
+        self.entry_search.grid(row=0, column=0, padx=16, pady=16, sticky="ew")
+        self.entry_search.bind("<KeyRelease>", self._on_search)
+        
+        self.scroll_frame = ctk.CTkScrollableFrame(self)
+        self.scroll_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="nsew")
+        
+        self.buttons = []
+        self._populate(self.values)
+        self.entry_search.focus()
+        
+    def _populate(self, items):
+        for btn in self.buttons:
+            btn.destroy()
+        self.buttons.clear()
+        
+        for item in items:
+            btn = ctk.CTkButton(
+                self.scroll_frame, 
+                text=item, 
+                anchor="w", 
+                fg_color="transparent", 
+                text_color=COR["text_primary"],
+                hover_color=COR["bg_card_hover"],
+                command=lambda val=item: self._on_select(val)
+            )
+            btn.pack(fill="x", pady=2)
+            self.buttons.append(btn)
+            
+    def _on_search(self, event=None):
+        query = self.entry_search.get().lower()
+        if not query:
+            filtered = self.values
+        else:
+            filtered = [v for v in self.values if query in v.lower()]
+        self._populate(filtered)
+        
+    def _on_select(self, value):
+        self.on_select_callback(value)
+        self.destroy()
+
+class SearchableDropdown(ctk.CTkFrame):
+    def __init__(self, master, values=None, command=None, width=200, **kwargs):
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.values = values or []
+        self.command = command
+        self.current_value = ""
+        self._values = self.values
+        
+        self.btn = ctk.CTkButton(
+            self, 
+            text="Selecione...", 
+            width=width,
+            anchor="w",
+            fg_color="#1F2937",
+            text_color="#F8FAFC",
+            border_width=1,
+            border_color="#374151",
+            hover_color="#374151",
+            command=self._open_popup
+        )
+        self.btn.pack(fill="both", expand=True)
+        
+    def configure(self, values=None, **kwargs):
+        if values is not None:
+            self.values = values
+            self._values = values
+            if not self.current_value and values:
+                self.set(values[0])
+        
+    def set(self, value):
+        self.current_value = value
+        self.btn.configure(text=value[:70] + ("..." if len(value) > 70 else ""))
+        
+    def get(self):
+        return self.current_value
+        
+    def _open_popup(self):
+        if not self.values or self.values == ["(Carregando...)"] or self.values == ["(Nenhum pregão carregado)"] or self.values == ["(Nenhum pregão)"]:
+            return
+        popup = SearchableSelectPopup(self.winfo_toplevel(), self.values, self._on_select)
+        
+    def _on_select(self, value):
+        self.set(value)
+        if self.command:
+            self.command(value)
+
 
 # ─── PAINEL 1: DASHBOARD ──────────────────────────────────────────────────────
 class PainelDashboard(ctk.CTkFrame):
@@ -595,6 +704,10 @@ class PainelDashboard(ctk.CTkFrame):
         )
         self.combo_status.set("Ativas (Pendente + Favorita)")
         self.combo_status.pack(side="left", padx=(0, 15), pady=6)
+        
+        disable_mouse_scroll(self.combo_modalidade)
+        disable_mouse_scroll(self.combo_uf)
+        disable_mouse_scroll(self.combo_status)
 
         btn_recarregar = ctk.CTkButton(
             frame_filtros, 
@@ -826,11 +939,11 @@ class PainelEditais(ctk.CTkFrame):
         import tkinter as tk
         ctk.CTkLabel(card_seletor, text="☁️  Selecione a Licitação na Nuvem:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["cyan_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
         
-        self.cmb_certames = ctk.CTkComboBox(
+        self.cmb_certames = SearchableDropdown(
             card_seletor,
             values=["(Carregando...)"],
-            font=ctk.CTkFont(weight="bold"),
             command=self._on_certame_selecionado,
+            width=300
         )
         self.cmb_certames.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
 
@@ -1116,7 +1229,7 @@ class PainelSessao(ctk.CTkFrame):
             text_color=COR["cyan_primary"],
         ).grid(row=0, column=1, padx=(16, 4), sticky="e")
 
-        self.cmb_disputa = ctk.CTkOptionMenu(
+        self.cmb_disputa = SearchableDropdown(
             ctrl_top,
             values=["(Nenhum pregão)"],
             width=260,
@@ -1698,6 +1811,7 @@ class PainelPNCP(ctk.CTkFrame):
         self.cmb_uf = ctk.CTkComboBox(card_filtros, values=["TO", "SP", "DF", "RJ", "MG", "BA", "GO", "TODAS"], width=100)
         self.cmb_uf.set("TO")
         self.cmb_uf.grid(row=1, column=1, padx=4, pady=8, sticky="w")
+        disable_mouse_scroll(self.cmb_uf)
 
         ctk.CTkLabel(card_filtros, text="Palavra-chave:", font=ctk.CTkFont(size=12)).grid(row=1, column=2, padx=(16, 4), pady=8, sticky="w")
         self.txt_kw = ctk.CTkEntry(card_filtros, placeholder_text="Ex: computador, limpeza, expediente...", width=260)
