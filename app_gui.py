@@ -1139,10 +1139,10 @@ class PainelSessao(ctk.CTkFrame):
 
         self.txt_url = ctk.CTkEntry(
             ctrl_actions,
-            placeholder_text="https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login",
+            placeholder_text="https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br",
             font=ctk.CTkFont(size=11),
         )
-        self.txt_url.insert(0, "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login")
+        self.txt_url.insert(0, "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br")
         self.txt_url.grid(row=0, column=1, padx=6, sticky="ew")
 
         self.btn_login_nativo = ctk.CTkButton(
@@ -1271,18 +1271,35 @@ class PainelSessao(ctk.CTkFrame):
         self.atualizar_tabela_inicial()
 
     def atualizar_seletor_disputa(self) -> None:
-        cat = self.app.catalogo_licitacoes
-        if not cat:
-            self.cmb_disputa.configure(values=["(Nenhum pregão)"])
-            self.cmb_disputa.set("(Nenhum pregão)")
+        import os
+        try:
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY")
+            sb = create_client(url, key)
+            res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
+            self.dados_nuvem = res.data
+        except Exception as e:
+            self.dados_nuvem = []
+
+        if not self.dados_nuvem:
+            self.cmb_disputa.configure(values=["(Nenhum pregão carregado)"])
+            self.cmb_disputa.set("(Nenhum pregão carregado)")
             self.atualizar_tabela_inicial()
             return
 
-        chaves = list(cat.keys())
-        self.cmb_disputa.configure(values=chaves)
-        selecionado = self.app.certame_selecionado or chaves[0]
-        self.cmb_disputa.set(selecionado)
-        self.atualizar_tabela_inicial()
+        lista_chaves = []
+        for lic in self.dados_nuvem:
+            uf = lic.get("uf", "")
+            orgao = lic.get("orgao_nome", "")[:20]
+            pregao = lic.get("numero_pregao", "")
+            texto = f"[{uf}] {orgao} - {pregao}"
+            lista_chaves.append(texto)
+            
+        self.cmb_disputa.configure(values=lista_chaves)
+        if lista_chaves:
+            self.cmb_disputa.set(lista_chaves[0])
+            self.atualizar_tabela_inicial()
 
     def atualizar_tabela_inicial(self) -> None:
         """Preenche a tabela da disputa com os itens do certame selecionado em estado aguardando."""
@@ -1290,50 +1307,63 @@ class PainelSessao(ctk.CTkFrame):
             self.tree_sessao.delete(r)
         self._item_rows.clear()
 
-        pregao = self.cmb_disputa.get()
-        if not pregao or pregao == "(Nenhum pregão)" or pregao not in self.app.catalogo_licitacoes:
+        escolha = self.cmb_disputa.get()
+        if not escolha or escolha.startswith("(Nenhum"):
             return
 
-        res = self.app.catalogo_licitacoes[pregao]
+        idx = self.cmb_disputa._values.index(escolha) if escolha in self.cmb_disputa._values else -1
+        if idx < 0 or not hasattr(self, "dados_nuvem"):
+            return
 
-        # Auto-preenche a URL direta da sala de disputa
-        url_sug = sugerir_url_disputa(res, pregao)
-        if url_sug and hasattr(self, "txt_url"):
+        lic = self.dados_nuvem[idx]
+
+        # Formata o numero do processo para a URL
+        uasg = str(lic.get("numero_uasg", "")).zfill(6)
+        num_raw = str(lic.get("numero_pregao", ""))
+        num = num_raw.split("/")[0].zfill(5) if "/" in num_raw else num_raw.zfill(5)
+        ano = num_raw.split("/")[1] if "/" in num_raw else "2024"
+        mod_cod = "05" if "preg" in (lic.get("modalidade") or "").lower() else "06"
+        numero_compra = f"{uasg}{mod_cod}{num}{ano}"
+
+        url_sug = f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra={numero_compra}"
+        if hasattr(self, "txt_url"):
             self.txt_url.delete(0, "end")
             self.txt_url.insert(0, url_sug)
 
-        for it in res.itens:
-            v_ref_str = f"R$ {it.valor_referencia:,.2f}" if it.valor_referencia else "—"
-            row_id = self.tree_sessao.insert(
-                "",
-                "end",
-                values=(
-                    it.numero_item,
-                    it.descricao[:80],
-                    "—",
-                    v_ref_str,
-                    "—",
-                    "⏳ AGUARDANDO",
-                ),
-            )
-            self._item_rows[it.numero_item] = row_id
+        # Preenche com os dados salvos no Supabase
+        valor = float(lic.get("valor_estimado") or 0.0)
+        piso = float(lic.get("piso_seguro") or valor * 0.7)
+        v_ref_str = f"R$ {valor:,.2f}" if valor else "—"
+        piso_str = f"R$ {piso:,.2f}"
+        
+        row_id = self.tree_sessao.insert(
+            "",
+            "end",
+            values=(
+                1,
+                lic.get("objeto", "")[:80],
+                "—",
+                v_ref_str,
+                "—",
+                f"⏳ AGUARDANDO (Stop: {piso_str})",
+            ),
+        )
+        self._item_rows[1] = row_id
 
     def _iniciar_sessao(self) -> None:
-        pregao = self.cmb_disputa.get()
-        if not pregao or pregao == "(Nenhum pregão)" or pregao not in self.app.catalogo_licitacoes:
+        escolha = self.cmb_disputa.get()
+        if not escolha or escolha.startswith("(Nenhum"):
             messagebox.showwarning(
                 "Selecione um Pregão",
-                "Carregue ou selecione um pregão válido na aba 'Editais & Custos' antes de iniciar a disputa.",
+                "Carregue ou selecione um pregão válido na nuvem antes de iniciar a disputa.",
             )
             return
 
-        res = self.app.catalogo_licitacoes[pregao]
-        if not res.itens:
-            messagebox.showwarning(
-                "Certame Sem Itens",
-                "O certame selecionado não possui itens válidos para disputa.",
-            )
+        idx = self.cmb_disputa._values.index(escolha) if escolha in self.cmb_disputa._values else -1
+        if idx < 0 or not hasattr(self, "dados_nuvem"):
             return
+
+        lic = self.dados_nuvem[idx]
 
         dry_run = bool(self.sw_modo.get())
         if not dry_run:
@@ -1349,46 +1379,30 @@ class PainelSessao(ctk.CTkFrame):
                 self.log("⚠️ Inicialização em modo real cancelada pelo operador.")
                 return
 
-        # Monta a lista de RegraItem
         regras: list[RegraItem] = []
-        for item in res.itens:
-            tipo_enum = TipoItemEnum.SERVICO if (item.tipo_item and "serv" in item.tipo_item.lower()) else TipoItemEnum.PRODUTO
-            if item.custo_real and item.custo_real > 0:
-                custo_base = item.custo_real
-            elif item.valor_referencia and item.valor_referencia > 0:
-                custo_base = round(item.valor_referencia * (0.50 if tipo_enum == TipoItemEnum.SERVICO else 0.65), 2)
-            else:
-                custo_base = 100.0
+        valor = float(lic.get("valor_estimado") or 100.0)
+        custo_base = float(lic.get("custo_real") or valor * 0.6)
+        piso_calc = float(lic.get("piso_seguro") or valor * 0.7)
+        preco_ini = float(lic.get("valor_estimado") or piso_calc * 1.3)
 
-            prec = PrecificacaoItem(
-                tipo_item=tipo_enum,
-                custo_base=custo_base,
-                valor_referencia_edital=item.valor_referencia,
+        regras.append(
+            RegraItem(
+                item_id=str(uuid.uuid4()),
+                numero_item=1,
+                descricao=lic.get("objeto", ""),
+                custo_unitario=custo_base,
+                margem_minima_percent=10.0,
+                preco_minimo=piso_calc,
+                preco_inicial_proposta=preco_ini,
+                intervalo_minimo=float(lic.get("intervalo_minimo") or 0.01),
+                tipo_intervalo=TipoIntervalo.MONETARIO,
+                valor_referencia=valor,
+                licitacao_id=lic.get("numero_pregao", "0"),
             )
-
-            piso_calc = item.piso_preco if (item.piso_preco and item.piso_preco > 0) else prec.piso_seguranca
-            preco_ini = prec.preco_abertura
-            if preco_ini <= piso_calc:
-                preco_ini = round(piso_calc * 1.10, 2)
-
-            regras.append(
-                RegraItem(
-                    item_id=str(uuid.uuid4()),
-                    numero_item=item.numero_item,
-                    descricao=item.descricao,
-                    custo_unitario=prec.custo_total,
-                    margem_minima_percent=prec.margem_liquida_minima_percentual,
-                    preco_minimo=piso_calc,
-                    preco_inicial_proposta=preco_ini,
-                    intervalo_minimo=item.decremento_minimo or 0.01,
-                    tipo_intervalo=TipoIntervalo.MONETARIO,
-                    valor_referencia=item.valor_referencia,
-                    licitacao_id=res.numero_pregao or "0",
-                )
-            )
+        )
 
         sessao_id = str(uuid.uuid4())
-        url_alvo = self.txt_url.get().strip() or "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login"
+        url_alvo = self.txt_url.get().strip() or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
 
         try:
             self._motor = MotorDecisao(dry_run=dry_run)
@@ -1398,7 +1412,7 @@ class PainelSessao(ctk.CTkFrame):
             self._bot = BrowserBot(
                 motor=self._motor,
                 sessao_id=sessao_id,
-                licitacao_id=res.numero_pregao,
+                licitacao_id=lic.get("numero_pregao", ""),
                 callback_ciclo=self._on_ciclo_update,
             )
         except Exception as exc:
@@ -1409,7 +1423,7 @@ class PainelSessao(ctk.CTkFrame):
         self.btn_parar.configure(state="normal")
 
         msg_modo = "🛡️ SIMULAÇÃO (Dry-Run)" if dry_run else "🔴 DISPUTA REAL (Envio de Lances)"
-        self.log(f"🚀 Iniciando robô para '{pregao}' | {msg_modo}")
+        self.log(f"🚀 Iniciando robô para '{escolha}' | {msg_modo}")
         self.log(f"   Sessão ID: {sessao_id[:13]}... | {len(regras)} itens carregados | URL: {url_alvo}")
 
         def _worker():
@@ -1426,7 +1440,7 @@ class PainelSessao(ctk.CTkFrame):
         self._thread_bot.start()
 
     def _fazer_login_nativo(self) -> None:
-        url = self.txt_url.get().strip() or "https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/login"
+        url = self.txt_url.get().strip() or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
         self.log("🔑 Abrindo Google Chrome nativo para login no Gov.br...")
         sucesso = abrir_login_nativo(url)
         if sucesso:

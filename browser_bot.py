@@ -446,9 +446,9 @@ class BrowserBot:
                 if "disputa" in current_url:
                     self._redirecionou_pos_login = True
 
-                # Verifica se o login foi concluído e voltou para a página inicial pós-login (intro.htm)
+                # Verifica se o login foi concluído e voltou para a página inicial pós-login (intro.htm) ou seleção de empresa
                 # IMPORTANTE: NUNCA redirecionar se o usuário estiver digitando credenciais ou autenticando!
-                is_intro_landing = "comprasnet.gov.br/intro.htm" in current_url or current_url.endswith("/intro.htm")
+                is_intro_landing = any(k in current_url for k in ("intro.htm", "loginfornecedorselecempresa.asp", "selecempresa", "comprasnet-web/seguro/fornecedor"))
                 is_on_auth = any(k in current_url for k in (
                     "acesso.gov.br", "sso", "contas.acesso", "gov.br/acesso",
                     "login", "autenticacao", "auth", "acesso-nao-autorizado", "certificados"
@@ -456,9 +456,10 @@ class BrowserBot:
 
                 # Se acabou de logar e caiu na home do portal antigo, redireciona UMA ÚNICA VEZ para a sala de disputa
                 if is_intro_landing and not is_on_auth and not self._redirecionou_pos_login:
+                    self._log("INFO", "✅ Login Gov.br autenticado com sucesso!")
                     if self.url_alvo and "disputa" in self.url_alvo.lower():
                         self._redirecionou_pos_login = True
-                        self._log("INFO", "🔄 Login Gov.br detectado! Abrindo a Sala de Disputa...")
+                        self._log("INFO", "🔄 Abrindo a Sala de Disputa...")
                         try:
                             active_page.goto(self.url_alvo, wait_until="domcontentloaded")
                             try:
