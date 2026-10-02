@@ -1020,6 +1020,18 @@ class PainelEditais(ctk.CTkFrame):
             text_color=COR["cyan_primary"],
         )
         lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+        btn_cotar = ctk.CTkButton(card_itens, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre)
+        btn_cotar.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 10))
+
+    def cotar_mercado_livre(self):
+        sel = self.tree_itens.selection()
+        if not sel:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Selecione um item do edital primeiro.")
+            return
+        if hasattr(self, "licitacao_ativa"):
+            cotar_no_ml_gui(self, self.licitacao_ativa)
+
 
     def atualizar_lista_certames(self) -> None:
         self.cmb_certames.set("(Carregando...)")
@@ -2107,6 +2119,13 @@ class PainelProdutos(ctk.CTkFrame):
         ctk.CTkButton(btn_frame, text="🔍 Cruzar com Fornecedores", command=self.cruzar_fornecedores).grid(row=0, column=0, padx=10)
         ctk.CTkButton(btn_frame, text="📥 Importar Tabela de Distribuidor", command=self.importar_tabela_distribuidor).grid(row=0, column=1, padx=10)
         ctk.CTkButton(btn_frame, text="📄 Gerar Proposta Comercial", command=self.gerar_proposta_comercial).grid(row=0, column=2, padx=10)
+        ctk.CTkButton(btn_frame, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre).grid(row=0, column=3, padx=10)
+        
+    def cotar_mercado_livre(self):
+        prod = self._get_selected_prod()
+        if not prod: return
+        cotar_no_ml_gui(self, prod)
+
         
         self.dados_produtos = []
         self.after(500, self.carregar_produtos_nuvem)

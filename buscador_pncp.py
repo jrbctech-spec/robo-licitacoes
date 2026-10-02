@@ -168,8 +168,8 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
         return
         
     payload["prioridade"] = crivo.get("prioridade")
-    payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
-    payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
+    # payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
+    # payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
 
     # 1. Salva no Supabase
     if supabase:
@@ -220,8 +220,8 @@ def processar_outras_fontes(oportunidades, notificados):
             continue
             
         payload["prioridade"] = crivo.get("prioridade")
-        payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
-        payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
+        # payload["piso_seguro"] = float(crivo.get("piso_seguro", 0.0))
+        # payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
         
         # Inject for Telegram
         item["prioridade"] = payload["prioridade"]
@@ -260,6 +260,20 @@ def executar_varredura_completa():
         for ed in editais:
             processar_e_salvar_edital(ed, termo, "Pregão Eletrônico", notificados)
         time.sleep(1.5)
+
+    logger.info(">>> 1.5. Varrendo PNCP (Filtro Específico Tocantins - TO)...")
+    try:
+        from pncp_client import buscar_publicacoes_pncp
+        for mod in [6, 8]:
+            res_to = buscar_publicacoes_pncp(uf="TO", codigo_modalidade=mod, tamanho_pagina=50)
+            itens_to = res_to.get("data", [])
+            for item in itens_to:
+                objeto = (item.get("objetoCompra") or "").lower()
+                if any(t.lower() in objeto for t in TERMOS_CNAE):
+                    processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
+            time.sleep(1.5)
+    except Exception as e:
+        logger.error(f"Erro ao varrer PNCP TO: {e}")
 
     logger.info(">>> 2. Varrendo NúcleoGov (Municípios do TO)...")
     op_nucleo = varrer_municipios_nucleogov()
