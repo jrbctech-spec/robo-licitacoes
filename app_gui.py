@@ -909,18 +909,28 @@ class PainelEditais(ctk.CTkFrame):
         lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
 
     def atualizar_lista_certames(self) -> None:
-        import os
-        try:
-            from supabase import create_client
-            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
-            sb = create_client(url, key)
-            res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
-            self.dados_nuvem = res.data
-        except Exception as e:
-            self.dados_nuvem = []
+        self.cmb_certames.set("(Carregando...)")
+        self.cmb_certames.configure(values=["(Carregando...)"])
+        
+        def worker():
+            import os
+            try:
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY")
+                sb = create_client(url, key)
+                res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
+                self.dados_nuvem = res.data
+            except Exception as e:
+                self.dados_nuvem = []
+                
+            self.after(0, self._concluir_atualizacao_lista_certames)
             
-        if not self.dados_nuvem:
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _concluir_atualizacao_lista_certames(self):
+        if not getattr(self, "dados_nuvem", None):
             self.cmb_certames.configure(values=["(Nenhum pregão carregado)"])
             self.cmb_certames.set("(Nenhum pregão carregado)")
             return
@@ -1829,7 +1839,8 @@ class PainelServicos(ctk.CTkFrame):
             objeto = srv.get("objeto", "")[:50]
             valor = float(srv.get("valor_estimado") or 0.0)
             valor_str = f"R$ {valor:,.2f}"
-            abertura = srv.get("data_abertura", "")[:10]
+            data_raw = srv.get("data_abertura") or ""
+            abertura = str(data_raw)[:10] if data_raw else "N/D"
             
             tag = "evenrow" if i % 2 == 0 else "oddrow"
             self.tree_servicos.insert("", "end", iid=str(i), values=(uf_cidade, distancia, orgao, objeto, valor_str, abertura), tags=(tag,))
