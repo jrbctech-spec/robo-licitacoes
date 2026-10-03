@@ -311,8 +311,8 @@ class SigaMonitor:
                             self.processos_vistos.add(num_proc)
                             novas_oportunidades += 1
 
-            await context.close()
-
+            if context:
+                await context.close()
         self._salvar_vistos()
         logger.info(f"Varredura concluída. Novas oportunidades notificadas: {novas_oportunidades}")
         return novas_oportunidades

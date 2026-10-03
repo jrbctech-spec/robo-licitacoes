@@ -34,7 +34,7 @@ from supabase import create_client
 try:
     # Pega da variável de ambiente OU usa a URL padrão oficial da JRBC TECH
     SUPABASE_URL = os.environ.get("SUPABASE_URL") or "https://szphoxostihnpcovyzvx.supabase.co"
-    SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+    SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or ""
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     logging.warning(f"Não foi possível inicializar o cliente Supabase globalmente: {e}")
@@ -66,6 +66,7 @@ try:
         ResultadoEdital,
         SeveridadeRisco,
     )
+    from mercadolivre_gui import cotar_no_ml_gui
     from browser_bot import BrowserBot, abrir_login_nativo
     from pncp_client import (
         carregar_certame_pncp,
@@ -189,7 +190,7 @@ def parsear_planilha_processo(caminho_arquivo: str | Path) -> ResultadoEdital:
             continue
 
         # Normalizar nomes de colunas
-        row_norm = {str(k).strip().lower(): v for k, v in row.items() if k is not None}
+        row_norm = {str(k).strip().lower(): v for k, v in row.items() if k is not None}  # type: ignore
 
         # Encontrar campo do item
         num_item = idx
@@ -579,6 +580,13 @@ class PainelDashboard(ctk.CTkFrame):
         
         btn_chrome = ctk.CTkButton(chrome_frame, text="🌐 Iniciar Chrome Licitações", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_cyan"], text_color="#080C14", hover_color=COR["accent_blue"], command=self._iniciar_chrome)
         btn_chrome.pack(side="right", padx=10)
+        
+        self.btn_sync_drive = ctk.CTkButton(
+            chrome_frame, text="📁 Sincronizar Pastas no Drive", font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_purple"], text_color="#FFFFFF", hover_color="#6366F1", corner_radius=8,
+            command=self._sincronizar_drive
+        )
+        self.btn_sync_drive.pack(side="right", padx=10)
 
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
         cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
@@ -597,6 +605,31 @@ class PainelDashboard(ctk.CTkFrame):
         self.card_status.grid(row=0, column=3, padx=(6, 0), sticky="ew")
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
+        
+    def _sincronizar_drive(self) -> None:
+        btn_txt_original = self.btn_sync_drive.cget("text")
+        self.btn_sync_drive.configure(text="⏳ Sincronizando pastas no Drive...", state="disabled")
+        
+        def worker():
+            from drive_pipeline_manager import executar_pipeline_drive
+            import supabase_client
+            
+            sb = supabase_client.get_client()
+            if sb:
+                qtd = executar_pipeline_drive(sb)
+                msg = f"{qtd} pastas sincronizadas no Drive e limpeza do Supabase concluída!"
+            else:
+                msg = "Erro: Cliente Supabase não configurado."
+                
+            self.after(0, lambda: self._fim_sincronizacao(btn_txt_original, msg))
+            
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fim_sincronizacao(self, text_orig: str, msg: str) -> None:
+        self.btn_sync_drive.configure(text=text_orig, state="normal")
+        import tkinter.messagebox as messagebox
+        messagebox.showinfo("Sincronização Drive", msg)
         main_content.grid(row=2, column=0, sticky="nsew")
         main_content.grid_columnconfigure(0, weight=1)
         main_content.grid_columnconfigure(1, weight=0, minsize=240)
@@ -698,14 +731,14 @@ class PainelDashboard(ctk.CTkFrame):
             from supabase import create_client
             import os
             url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
+            key = os.getenv("SUPABASE_KEY") or ""
             sb = create_client(url, key)
             sb.table("licitacoes").update({"status_analise": novo_status.lower()}).eq("id", licitacao_id).execute()
 
             if hasattr(self, "todas_licitacoes"):
                 for lic in self.todas_licitacoes:
-                    if str(lic.get("id")) == str(licitacao_id):
-                        lic["status_analise"] = novo_status.lower()
+                    if str(lic.get("id")) == str(licitacao_id):  # type: ignore
+                        lic["status_analise"] = novo_status.lower()  # type: ignore
                         break
             
             self.aplicar_filtros()
@@ -732,10 +765,10 @@ class PainelDashboard(ctk.CTkFrame):
         row_idx = 0
 
         for lic in self.todas_licitacoes:
-            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
-            uf = (lic.get("uf") or "").upper().strip()
-            status = (lic.get("status_analise") or "PENDENTE").upper().strip()
-            objeto = (lic.get("objeto") or "Sem descrição")
+            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""  # type: ignore
+            uf = (lic.get("uf") or "").upper().strip()  # type: ignore
+            status = (lic.get("status_analise") or "PENDENTE").upper().strip()  # type: ignore
+            objeto = (lic.get("objeto") or "Sem descrição")  # type: ignore
 
             if mod_selecionada != "Todas" and mod_selecionada.lower() not in modalidade_nome.lower():
                 continue
@@ -753,11 +786,11 @@ class PainelDashboard(ctk.CTkFrame):
                 continue
 
             sigla = "PE" if "Pregão" in modalidade_nome else ("Dispensa" if "Dispensa" in modalidade_nome else modalidade_nome)
-            numero = lic.get("numero_pregao", "S/N")
-            uasg = lic.get("numero_uasg", "S/ UASG")
+            numero = lic.get("numero_pregao", "S/N")  # type: ignore
+            uasg = lic.get("numero_uasg", "S/ UASG")  # type: ignore
             pregao_formatado = f"{sigla} {numero} (UASG {uasg})"
             
-            valor = float(lic.get('valor_estimado') or 0.0)
+            valor = float(lic.get('valor_estimado') or 0.0)  # type: ignore
             
             # CUIDADO COM PALAVRAS DE TI
             ti_kws = ["tecnologia", "informática", "software", "computador", "rede", "suporte", "cabeamento", "notebook", "nobreak"]
@@ -785,9 +818,9 @@ class PainelDashboard(ctk.CTkFrame):
             # Prazo
             import datetime
             prazo = " ⏳ PRAZO: EM BREVE "
-            if lic.get("data_abertura"):
+            if lic.get("data_abertura"):  # type: ignore
                 try:
-                    dt = datetime.datetime.fromisoformat(lic.get("data_abertura").replace("Z", "+00:00"))
+                    dt = datetime.datetime.fromisoformat(lic.get("data_abertura").replace("Z", "+00:00"))  # type: ignore
                     diff = dt - datetime.datetime.now(datetime.timezone.utc)
                     if diff.total_seconds() > 0 and diff.total_seconds() < 48 * 3600:
                         ctk.CTkLabel(badges_frame, text=" ⏳ < 48H ", fg_color=COR["accent_amber"], text_color="#080C14", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
@@ -795,7 +828,7 @@ class PainelDashboard(ctk.CTkFrame):
                     pass
 
             # Linhas de Texto
-            orgao = f"[{uf}] {lic.get('orgao_nome', '')[:45]}"
+            orgao = f"[{uf}] {lic.get('orgao_nome', '')[:45]}"  # type: ignore
             ctk.CTkLabel(card, text=orgao, font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=16)
             ctk.CTkLabel(card, text=objeto[:100] + ("..." if len(objeto) > 100 else ""), font=ctk.CTkFont(size=12), text_color=COR["text_secondary"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 12))
 
@@ -803,7 +836,7 @@ class PainelDashboard(ctk.CTkFrame):
             val_str = f"R$ {valor:,.2f}"
             ctk.CTkLabel(card, text=val_str, font=ctk.CTkFont(size=18, weight="bold"), text_color=COR["accent_green"]).grid(row=1, column=2, sticky="e", padx=16, rowspan=2)
 
-            link = lic.get("link_edital", "")
+            link = lic.get("link_edital", "")  # type: ignore
             btn = ctk.CTkButton(card, text="Acessar Processo", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=20, width=120)
             if link:
                 import webbrowser
@@ -824,8 +857,8 @@ class PainelDashboard(ctk.CTkFrame):
         lic_id = item[0]
         if hasattr(self, "todas_licitacoes"):
             for lic in self.todas_licitacoes:
-                if str(lic.get("id")) == str(lic_id):
-                    link = lic.get("link_edital")
+                if str(lic.get("id")) == str(lic_id):  # type: ignore
+                    link = lic.get("link_edital")  # type: ignore
                     if link and link.startswith("http"):
                         import webbrowser
                         webbrowser.open(link)
@@ -859,43 +892,72 @@ class PainelDashboard(ctk.CTkFrame):
 
     def verificar_status_chrome(self) -> None:
         import requests
-        try:
-            resp = requests.get("http://localhost:9222/json/version", timeout=1)
-            if resp.status_code == 200:
-                self.lbl_chrome_status.configure(text="🟢 Chrome Conectado (Porta 9222)", text_color=COR["accent_green"])
-            else:
-                self.lbl_chrome_status.configure(text="⚪ Chrome Desconectado", text_color=COR["text_secondary"])
-        except Exception:
-            self.lbl_chrome_status.configure(text="⚪ Chrome Desconectado", text_color=COR["text_secondary"])
-        self.after(5000, self.verificar_status_chrome)
+        import threading
+        
+        def checker():
+            try:
+                resp = requests.get("http://localhost:9222/json/version", timeout=1)
+                is_connected = (resp.status_code == 200)
+            except Exception:
+                is_connected = False
+                
+            def update_ui():
+                try:
+                    if is_connected:
+                        self.lbl_chrome_status.configure(text="🟢 Chrome Conectado (Porta 9222)", text_color=COR["accent_green"])
+                    else:
+                        self.lbl_chrome_status.configure(text="⚪ Chrome Desconectado", text_color=COR["text_secondary"])
+                    self.after(5000, self.verificar_status_chrome)
+                except Exception:
+                    pass # ignore if widget is destroyed
+                    
+            self.after(0, update_ui)
+            
+        threading.Thread(target=checker, daemon=True).start()
 
     def carregar_dados_dashboard(self) -> None:
-        """Busca licitações salvas no Supabase e popula a tabela no Dashboard."""
-        try:
-            from supabase import create_client
-            import os
-            
-            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
-            
-            if not key:
-                logging.warning("[GUI] SUPABASE_KEY não configurada no ambiente.")
-                return
-                
-            sb = create_client(url, key)
-            
-            resposta = sb.table("licitacoes")\
-                .select("*")\
-                .order("atualizado_em", desc=True)\
-                .limit(200)\
-                .execute()
-                
-            self.todas_licitacoes = resposta.data or []
+        """Busca licitações salvas no Supabase e popula a tabela no Dashboard (Assíncrono)."""
+        import threading
+        import cache_manager
+        
+        # 1. Carrega do cache instantaneamente na MainThread
+        cache = cache_manager.carregar_cache()
+        if "todas_licitacoes" in cache:
+            self.todas_licitacoes = cache["todas_licitacoes"]
             self.aplicar_filtros()
-            logging.info(f"[GUI] {len(self.todas_licitacoes)} licitações carregadas com sucesso do Supabase!")
             
-        except Exception as e:
-            logging.error(f"[GUI] Erro ao carregar dados do Supabase no Dashboard: {e}")
+        def worker():
+            try:
+                from supabase import create_client
+                import os
+                
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                
+                if not key:
+                    logging.warning("[GUI] SUPABASE_KEY não configurada no ambiente.")
+                    return
+                    
+                sb = create_client(url, key)
+                
+                resposta = sb.table("licitacoes")\
+                    .select("*")\
+                    .order("atualizado_em", desc=True)\
+                    .limit(200)\
+                    .execute()
+                    
+                self.todas_licitacoes = resposta.data or []
+                
+                # 2. Salva o novo cache
+                cache_manager.salvar_cache("todas_licitacoes", self.todas_licitacoes)
+                
+                self.after(0, self.aplicar_filtros)
+                logging.info(f"[GUI] {len(self.todas_licitacoes)} licitações carregadas com sucesso do Supabase!")
+                
+            except Exception as e:
+                logging.error(f"[GUI] Erro ao carregar dados do Supabase no Dashboard: {e}")
+                
+        threading.Thread(target=worker, daemon=True).start()
 
 
 # ─── PAINEL 2: EDITAIS & CUSTOS (MULTI-CERTAME) ────────────────────────────────
@@ -1020,7 +1082,7 @@ class PainelEditais(ctk.CTkFrame):
             try:
                 from supabase import create_client
                 url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-                key = os.getenv("SUPABASE_KEY")
+                key = os.getenv("SUPABASE_KEY") or ""
                 sb = create_client(url, key)
                 res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
                 self.dados_nuvem = res.data
@@ -1040,9 +1102,9 @@ class PainelEditais(ctk.CTkFrame):
 
         lista_chaves = []
         for lic in self.dados_nuvem:
-            uf = lic.get("uf", "")
-            orgao = lic.get("orgao_nome", "")[:20]
-            pregao = lic.get("numero_pregao", "")
+            uf = lic.get("uf", "")  # type: ignore
+            orgao = lic.get("orgao_nome", "")[:20]  # type: ignore
+            pregao = lic.get("numero_pregao", "")  # type: ignore
             texto = f"[{uf}] {orgao} - {pregao}"
             lista_chaves.append(texto)
             
@@ -1059,7 +1121,7 @@ class PainelEditais(ctk.CTkFrame):
             
             # Extrair CNPJ, Ano, Sequencial e carregar itens reais do PNCP
             def worker():
-                link = lic.get("link_sistema", "")
+                link = lic.get("link_sistema", "")  # type: ignore
                 if "pncp.gov.br" in link:
                     try:
                         from pncp_client import extrair_params_pncp, carregar_certame_pncp
@@ -1068,7 +1130,7 @@ class PainelEditais(ctk.CTkFrame):
                             self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
                             self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando itens no PNCP...", "", "", "", "", "", "")))
                             
-                            resultado = carregar_certame_pncp(cnpj, ano, seq)
+                            resultado = carregar_certame_pncp(link)
                             self.after(0, lambda: self._exibir_itens_pncp(lic, resultado))
                             return
                     except Exception as e:
@@ -1076,7 +1138,7 @@ class PainelEditais(ctk.CTkFrame):
                         logging.error(f"Erro ao buscar PNCP: {e}")
                 
                 # Fallback se falhar ou não for PNCP
-                self.after(0, lambda: self._exibir_itens(lic))
+                self.after(0, lambda: self._exibir_itens(lic))  # type: ignore
 
             import threading
             threading.Thread(target=worker, daemon=True).start()
@@ -1103,7 +1165,7 @@ class PainelEditais(ctk.CTkFrame):
             self.tree_itens.insert(
                 "",
                 "end",
-                iid=f"{lic.get('id')}_{item.numero_item}",
+                iid=f"{lic.get('id')}_{item.numero_item}",  # type: ignore
                 values=(
                     str(item.numero_item),
                     item.descricao[:100],
@@ -1121,9 +1183,9 @@ class PainelEditais(ctk.CTkFrame):
         for row in self.tree_itens.get_children():
             self.tree_itens.delete(row)
             
-        valor = float(lic.get("valor_estimado") or 0.0)
-        custo_real = float(lic.get("custo_real") or valor * 0.5)
-        piso = float(lic.get("piso_seguro") or valor * 0.7)
+        valor = float(lic.get("valor_estimado") or 0.0)  # type: ignore
+        custo_real = float(lic.get("custo_real") or valor * 0.5)  # type: ignore
+        piso = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
         margem = ((valor - piso) / valor * 100) if valor > 0 else 0.0
 
         val_ref_str = f"R$ {valor:,.2f}"
@@ -1134,10 +1196,10 @@ class PainelEditais(ctk.CTkFrame):
         self.tree_itens.insert(
             "",
             "end",
-            iid=lic.get("id"),
+            iid=lic.get("id"),  # type: ignore
             values=(
                 "1",
-                lic.get("objeto", "")[:100],
+                lic.get("objeto", "")[:100],  # type: ignore
                 "1",
                 "UN",
                 val_ref_str,
@@ -1149,16 +1211,16 @@ class PainelEditais(ctk.CTkFrame):
         )
         
         # Load rules if exist
-        regra = lic.get("regra_lance")
+        regra = lic.get("regra_lance")  # type: ignore
         if regra:
             self.var_regra.set(regra)
-        intervalo = lic.get("intervalo_minimo")
+        intervalo = lic.get("intervalo_minimo")  # type: ignore
         if intervalo:
             self.txt_intervalo.delete(0, "end")
             self.txt_intervalo.insert(0, str(intervalo))
 
     def _salvar_regras_supabase(self) -> None:
-        if not hasattr(self, "licitacao_ativa"): return
+        if not hasattr(self, "licitacao_ativa") or not isinstance(self.licitacao_ativa, dict): return
         lic_id = self.licitacao_ativa.get("id")
         regra = self.var_regra.get()
         intervalo_str = self.txt_intervalo.get()
@@ -1174,7 +1236,7 @@ class PainelEditais(ctk.CTkFrame):
         try:
             from supabase import create_client
             url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
+            key = os.getenv("SUPABASE_KEY") or ""
             sb = create_client(url, key)
             sb.table("licitacoes").update({"regra_lance": regra, "intervalo_minimo": intervalo}).eq("id", lic_id).execute()
             import tkinter.messagebox as messagebox
@@ -1189,7 +1251,8 @@ class PainelEditais(ctk.CTkFrame):
             return
             
         lic_id = selected[0]
-        vals = self.tree_itens.item(lic_id, "values")
+        vals = self.tree_itens.item(lic_id, "values")  # type: ignore
+        if not vals or len(vals) < 6: return
         
         import os
         dialog = ctk.CTkInputDialog(text=f"Digite o novo Custo Real para o item 1:\\nAtual: {vals[5]}", title="Editar Custo")
@@ -1202,7 +1265,7 @@ class PainelEditais(ctk.CTkFrame):
                 
                 from supabase import create_client
                 url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-                key = os.getenv("SUPABASE_KEY")
+                key = os.getenv("SUPABASE_KEY") or ""
                 sb = create_client(url, key)
                 sb.table("licitacoes").update({"custo_real": novo_custo_f, "piso_seguro": novo_piso}).eq("id", lic_id).execute()
                 
@@ -1521,7 +1584,7 @@ class PainelSessao(ctk.CTkFrame):
         try:
             from supabase import create_client
             url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
+            key = os.getenv("SUPABASE_KEY") or ""
             sb = create_client(url, key)
             res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
             self.dados_nuvem = res.data
@@ -1536,9 +1599,9 @@ class PainelSessao(ctk.CTkFrame):
 
         lista_chaves = []
         for lic in self.dados_nuvem:
-            uf = lic.get("uf", "")
-            orgao = lic.get("orgao_nome", "")[:20]
-            pregao = lic.get("numero_pregao", "")
+            uf = lic.get("uf", "")  # type: ignore
+            orgao = lic.get("orgao_nome", "")[:20]  # type: ignore
+            pregao = lic.get("numero_pregao", "")  # type: ignore
             texto = f"[{uf}] {orgao} - {pregao}"
             lista_chaves.append(texto)
             
@@ -1564,11 +1627,11 @@ class PainelSessao(ctk.CTkFrame):
         lic = self.dados_nuvem[idx]
 
         # Formata o numero do processo para a URL
-        uasg = str(lic.get("numero_uasg", "")).zfill(6)
-        num_raw = str(lic.get("numero_pregao", ""))
+        uasg = str(lic.get("numero_uasg", "")).zfill(6)  # type: ignore
+        num_raw = str(lic.get("numero_pregao", ""))  # type: ignore
         num = num_raw.split("/")[0].zfill(5) if "/" in num_raw else num_raw.zfill(5)
         ano = num_raw.split("/")[1] if "/" in num_raw else "2024"
-        mod_cod = "05" if "preg" in (lic.get("modalidade") or "").lower() else "06"
+        mod_cod = "05" if "preg" in (lic.get("modalidade") or "").lower() else "06"  # type: ignore
         numero_compra = f"{uasg}{mod_cod}{num}{ano}"
 
         url_sug = f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra={numero_compra}"
@@ -1577,8 +1640,8 @@ class PainelSessao(ctk.CTkFrame):
             self.txt_url.insert(0, url_sug)
 
         # Preenche com os dados salvos no Supabase
-        valor = float(lic.get("valor_estimado") or 0.0)
-        piso = float(lic.get("piso_seguro") or valor * 0.7)
+        valor = float(lic.get("valor_estimado") or 0.0)  # type: ignore
+        piso = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
         v_ref_str = f"R$ {valor:,.2f}" if valor else "—"
         piso_str = f"R$ {piso:,.2f}"
         
@@ -1587,7 +1650,7 @@ class PainelSessao(ctk.CTkFrame):
             "end",
             values=(
                 1,
-                lic.get("objeto", "")[:80],
+                lic.get("objeto", "")[:80],  # type: ignore
                 "—",
                 v_ref_str,
                 "—",
@@ -1626,24 +1689,24 @@ class PainelSessao(ctk.CTkFrame):
                 return
 
         regras: list[RegraItem] = []
-        valor = float(lic.get("valor_estimado") or 100.0)
-        custo_base = float(lic.get("custo_real") or valor * 0.6)
-        piso_calc = float(lic.get("piso_seguro") or valor * 0.7)
-        preco_ini = float(lic.get("valor_estimado") or piso_calc * 1.3)
+        valor = float(lic.get("valor_estimado") or 100.0)  # type: ignore
+        custo_base = float(lic.get("custo_real") or valor * 0.6)  # type: ignore
+        piso_calc = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
+        preco_ini = float(lic.get("valor_estimado") or piso_calc * 1.3)  # type: ignore
 
         regras.append(
             RegraItem(
                 item_id=str(uuid.uuid4()),
                 numero_item=1,
-                descricao=lic.get("objeto", ""),
+                descricao=lic.get("objeto", ""),  # type: ignore
                 custo_unitario=custo_base,
                 margem_minima_percent=10.0,
                 preco_minimo=piso_calc,
                 preco_inicial_proposta=preco_ini,
-                intervalo_minimo=float(lic.get("intervalo_minimo") or 0.01),
+                intervalo_minimo=float(lic.get("intervalo_minimo") or 0.01),  # type: ignore
                 tipo_intervalo=TipoIntervalo.MONETARIO,
                 valor_referencia=valor,
-                licitacao_id=lic.get("numero_pregao", "0"),
+                licitacao_id=lic.get("numero_pregao", "0"),  # type: ignore
             )
         )
 
@@ -1658,7 +1721,7 @@ class PainelSessao(ctk.CTkFrame):
             self._bot = BrowserBot(
                 motor=self._motor,
                 sessao_id=sessao_id,
-                licitacao_id=lic.get("numero_pregao", ""),
+                licitacao_id=lic.get("numero_pregao", ""),  # type: ignore
                 callback_ciclo=self._on_ciclo_update,
             )
             self._bot.callback_copiloto = self._trigger_copiloto_auto
@@ -1749,12 +1812,12 @@ class PainelSessao(ctk.CTkFrame):
                 elif dec.motivo == MotivoBloqueio.JA_VENCENDO or (pos == 1):
                     status_txt = "🏆 LIDERANDO"
                     liderando_cnt += 1
-                elif dec.motivo == MotivoBloqueio.SUPERADO or (pos and pos > 1):
+                elif (pos and pos > 1):
                     status_txt = "🟡 SUPERADO"
 
             if num in self._item_rows:
                 row_id = self._item_rows[num]
-                desc_atual = self.tree_sessao.item(row_id)["values"][1]
+                desc_atual = self.tree_sessao.item(row_id)["values"][1]  # type: ignore
                 self.tree_sessao.item(
                     row_id,
                     values=(num, desc_atual, meu_lance_str, menor_lance_str, pos_str, status_txt),
@@ -1815,12 +1878,12 @@ class PainelSessao(ctk.CTkFrame):
         
         if self._bot and getattr(self._bot.motor, "_estados", None):
             for item_id, st in self._bot.motor._estados.items():
-                if st.estado_pagina.nossa_posicao:
+                if st.nossa_posicao:
                     estado["item"] = f"Item {st.regra.numero_item} - {st.regra.descricao[:30]}..."
-                    estado["meu_lance"] = f"{st.estado_pagina.nosso_ultimo_lance}"
-                    estado["melhor_lance"] = f"{st.estado_pagina.melhor_lance_mercado}"
+                    estado["meu_lance"] = f"{st.meu_ultimo_lance}"
+                    estado["melhor_lance"] = f"{st.melhor_lance_mercado}"
                     estado["stop_loss"] = f"{st.regra.preco_minimo}"
-                    estado["posicao"] = f"{st.estado_pagina.nossa_posicao}"
+                    estado["posicao"] = f"{st.nossa_posicao}"
                     break
         
         self._adicionar_chat("🤖 Copiloto analisando o pregão...", "#94A3B8")
@@ -2012,27 +2075,35 @@ class PainelServicos(ctk.CTkFrame):
         self.after(500, self.carregar_servicos_nuvem)
 
     def carregar_servicos_nuvem(self):
-        try:
-            import os
-            from supabase import create_client
-            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
-            sb = create_client(url, key)
-            res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'SERVICO').order('atualizado_em', desc=True).execute()
-            
-            # Filtro para Tecnologia da Informação (TI e Infraestrutura) e Abertos
-            dados = []
-            ti_kws = ["cabeamento", "rede", "manutenção de computador", "notebook", "nobreak", "cftv", "suporte", "servidor", "proxmox", "linux", "firewall", "backup", "tecnologia", "informática"]
-            for srv in res.data:
-                obj = (srv.get("objeto") or "").lower()
-                status = (srv.get("status_analise") or "pendente").lower()
-                if status not in ["encerrada", "descartada"] and any(kw in obj for kw in ti_kws):
-                    dados.append(srv)
-            self.dados_servicos = dados
-        except Exception as e:
-            print("Erro ao carregar serviços:", e)
-            self.dados_servicos = []
-            
+        import threading
+        def worker():
+            try:
+                import os
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                sb = create_client(url, key)
+                res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'SERVICO').order('atualizado_em', desc=True).execute()
+                
+                # Filtro para Tecnologia da Informação (TI e Infraestrutura) e Abertos
+                dados = []
+                ti_kws = ["cabeamento", "rede", "manutenção de computador", "notebook", "nobreak", "cftv", "suporte", "servidor", "proxmox", "linux", "firewall", "backup", "tecnologia", "informática"]
+                for srv in res.data:
+                    if not isinstance(srv, dict): continue
+                    obj = str(srv.get("objeto") or "").lower()
+                    status = str(srv.get("status_analise") or "pendente").lower()
+                    if status not in ["encerrada", "descartada"] and any(kw in obj for kw in ti_kws):
+                        dados.append(srv)
+                self.dados_servicos = dados
+            except Exception as e:
+                print("Erro ao carregar serviços:", e)
+                self.dados_servicos = []
+                
+            self.after(0, self._exibir_servicos_nuvem)
+        
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _exibir_servicos_nuvem(self):
         for row in self.tree_servicos.get_children():
             self.tree_servicos.delete(row)
             
@@ -2151,7 +2222,7 @@ class PainelServicos(ctk.CTkFrame):
             import os
             resp = messagebox.askyesno("Excel Gerado", "Planilha gerada com sucesso!\n\nDeseja abrir a pasta no sistema operacional?")
             if resp:
-                os.system('xdg-open ~/Documentos/Licitacoes_Aprovadas')
+                import subprocess; subprocess.Popen(['xdg-open', os.path.expanduser('~/Documentos/Licitacoes_Aprovadas')])
         except Exception as e:
             import tkinter.messagebox as messagebox
             messagebox.showerror("Erro", f"Falha ao gerar Excel:\n{e}")
@@ -2209,28 +2280,37 @@ class PainelProdutos(ctk.CTkFrame):
         self.after(500, self.carregar_produtos_nuvem)
         
     def carregar_produtos_nuvem(self):
-        try:
-            import os
-            from supabase import create_client
-            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-            key = os.getenv("SUPABASE_KEY")
-            sb = create_client(url, key)
-            res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'PRODUTO').order('atualizado_em', desc=True).execute()
-            self.dados_produtos = res.data
-        except Exception as e:
-            print("Erro ao carregar produtos:", e)
-            self.dados_produtos = []
+        import threading
+        def worker():
+            try:
+                import os
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                sb = create_client(url, key)
+                res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'PRODUTO').order('atualizado_em', desc=True).execute()
+                self.dados_produtos = res.data
+            except Exception as e:
+                print("Erro ao carregar produtos:", e)
+                self.dados_produtos = []
+            self.after(0, self._exibir_produtos_nuvem)
+        
+        threading.Thread(target=worker, daemon=True).start()
+        
+    def _exibir_produtos_nuvem(self):
             
         for row in self.tree_produtos.get_children():
             self.tree_produtos.delete(row)
             
         for i, prod in enumerate(self.dados_produtos):
+            if not isinstance(prod, dict): continue
             uf_cidade = f"[{prod.get('uf', 'BR')}] {prod.get('municipio', 'Nacional')}"
-            orgao = prod.get("orgao_nome", "")[:30]
-            objeto = prod.get("objeto", "")[:50]
-            valor = float(prod.get("valor_estimado") or 0.0)
+            orgao = str(prod.get("orgao_nome") or "")[:30]
+            objeto = str(prod.get("objeto") or "")[:50]
+            valor_raw = prod.get("valor_estimado")
+            valor = float(valor_raw) if valor_raw else 0.0  # type: ignore
             valor_str = f"R$ {valor:,.2f}"
-            status = prod.get("status_analise", "pendente").title()
+            status = str(prod.get("status_analise") or "pendente").title()
             
             tag = "evenrow" if i % 2 == 0 else "oddrow"
             self.tree_produtos.insert("", "end", iid=str(i), values=(uf_cidade, orgao, objeto, valor_str, status), tags=(tag,))
@@ -2309,7 +2389,7 @@ class PainelProdutos(ctk.CTkFrame):
             
         resp = messagebox.askyesno("Proposta Gerada", "Planilha de Proposta Comercial gerada com sucesso!\n\nDeseja abrir a pasta no sistema operacional?")
         if resp:
-            os.system(f'xdg-open "{pasta_dest}"')
+            import subprocess; subprocess.Popen(['xdg-open', pasta_dest])
 
 class App(ctk.CTk):
     def __init__(self) -> None:
@@ -2325,6 +2405,12 @@ class App(ctk.CTk):
 
         self._paineis: dict[str, ctk.CTkFrame] = {}
         self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def on_closing(self) -> None:
+        self.destroy()
+        import os
+        os._exit(0)
 
     def adicionar_licitacao(self, nome_chave: str, res: ResultadoEdital) -> None:
         """Adiciona um pregão/dispensa ao catálogo diário sem apagar os anteriores."""
@@ -2416,8 +2502,26 @@ class App(ctk.CTk):
     def log(self, nivel: str, msg: str) -> None:
         logger.info(f"[{nivel}] {msg}")
 
+import os
+import fcntl
+_lock_fd = None
 
 def run_gui() -> None:
+    global _lock_fd
+    try:
+        lock_file = os.path.join(os.path.expanduser("~"), ".robo_licitacoes.lock")
+        _lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY)
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except Exception:
+        import tkinter.messagebox as messagebox
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showwarning("Aviso", "O robô já está em execução!")
+        root.destroy()
+        import sys
+        sys.exit(0)
+
     app = App()
     app.mainloop()
 

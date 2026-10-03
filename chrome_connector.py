@@ -46,7 +46,7 @@ async def obter_contexto_navegador(playwright) -> Tuple[Optional[BrowserContext]
     return context, False
 
 
-async def obter_aba_inteligente(context, url_alvo: str) -> Page:
+async def obter_aba_inteligente(context: BrowserContext, url_alvo: str) -> Page:
     """
     Verifica se já existe uma aba aberta com a URL alvo (ex: siga.to.gov.br).
     Retorna essa aba ou cria uma nova.

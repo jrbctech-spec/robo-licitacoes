@@ -140,6 +140,7 @@ class ItemEdital:
     decremento_percentual: Optional[float] = None
     tipo_item: str = "produto"   # "servico" ou "produto"
     piso_preco: Optional[float] = None
+    custo_real: Optional[float] = None
 
 
 @dataclass
@@ -1073,7 +1074,8 @@ class EditalParser:
 
             if uploaded_file and hasattr(uploaded_file, "name"):
                 try:
-                    client.files.delete(name=uploaded_file.name)
+                    if uploaded_file.name is not None:
+                        client.files.delete(name=uploaded_file.name)
                 except Exception:
                     pass
 

@@ -56,3 +56,5 @@ browser_profile/
 .tmp/
 browser_profile/
 .venv/
+
+data/*.json

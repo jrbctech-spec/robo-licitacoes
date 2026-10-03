@@ -90,7 +90,7 @@ def salvar_historico_notificados(notificados: set):
         logger.error(f"Falha ao salvar cache de notificações: {e}")
 
 def formatar_link_pncp(cnpj: str, ano: str, sequencial: str) -> str:
-    cnpj_limpo = "".join(filter(str.isdigit, str(cnpj)))
+    cnpj_limpo = "".join(filter(str.isdigit, cnpj))
     if cnpj_limpo and ano and sequencial:
         return f"https://pncp.gov.br/app/editais/{cnpj_limpo}/{ano}/{sequencial}"
     return "https://pncp.gov.br"
@@ -112,21 +112,23 @@ def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
         "status": "aberto"
     }
 
-    for tentativa in range(3):
+    for tentativa in range(5):
         try:
             res = requests.get(url, params=params, headers=HEADERS_PNCP, timeout=30)
             if res.status_code == 200:
                 dados = res.json()
                 return dados.get("items", []) or dados.get("data", [])
             elif res.status_code == 429:
-                logger.warning("Rate limit no PNCP. Aguardando 4s...")
-                time.sleep(4)
+                espera = 4 * (tentativa + 1)
+                logger.warning(f"Rate limit no PNCP. Aguardando {espera}s...")
+                time.sleep(espera)
             else:
                 logger.warning(f"PNCP status {res.status_code} para '{termo}'.")
-                time.sleep(2)
+                time.sleep(2 * (tentativa + 1))
         except requests.RequestException as e:
-            logger.error(f"Falha de rede ao buscar '{termo}': {e}")
-            time.sleep(2)
+            espera = 3 * (tentativa + 1)
+            logger.error(f"Falha de rede ao buscar '{termo}': {e}. Tentando novamente em {espera}s...")
+            time.sleep(espera)
     return []
 
 def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, notificados: set):
@@ -237,7 +239,21 @@ def processar_outras_fontes(oportunidades, notificados):
                     on_conflict="numero_controle_pncp"
                 ).execute()
             except Exception as e:
-                logger.error(f"Erro ao salvar no Supabase (Fonte Externa): {e}")
+                erro_str = str(e)
+                if "PGRST204" in erro_str or "Could not find the" in erro_str:
+                    logger.warning(f"Schema mismatch detectado no Supabase (PGRST204). Tentando salvar modo de compatibilidade...")
+                    payload.pop("prioridade", None)
+                    payload.pop("portal", None)
+                    try:
+                        supabase.table("licitacoes").upsert(
+                            payload,
+                            on_conflict="numero_controle_pncp"
+                        ).execute()
+                        logger.info("Salvo com sucesso em modo de compatibilidade.")
+                    except Exception as fallback_e:
+                        logger.error(f"Erro no fallback do Supabase: {fallback_e}")
+                else:
+                    logger.error(f"Erro ao salvar no Supabase (Fonte Externa): {e}")
 
         if id_unico not in notificados:
             # Passa o item original para ter 'esfera' e 'distancia_palmas'
