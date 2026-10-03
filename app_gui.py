@@ -606,30 +606,7 @@ class PainelDashboard(ctk.CTkFrame):
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
         
-    def _sincronizar_drive(self) -> None:
-        btn_txt_original = self.btn_sync_drive.cget("text")
-        self.btn_sync_drive.configure(text="⏳ Sincronizando pastas no Drive...", state="disabled")
-        
-        def worker():
-            from drive_pipeline_manager import executar_pipeline_drive
-            import supabase_client
-            
-            sb = supabase_client.get_client()
-            if sb:
-                qtd = executar_pipeline_drive(sb)
-                msg = f"{qtd} pastas sincronizadas no Drive e limpeza do Supabase concluída!"
-            else:
-                msg = "Erro: Cliente Supabase não configurado."
-                
-            self.after(0, lambda: self._fim_sincronizacao(btn_txt_original, msg))
-            
-        import threading
-        threading.Thread(target=worker, daemon=True).start()
 
-    def _fim_sincronizacao(self, text_orig: str, msg: str) -> None:
-        self.btn_sync_drive.configure(text=text_orig, state="normal")
-        import tkinter.messagebox as messagebox
-        messagebox.showinfo("Sincronização Drive", msg)
         main_content.grid(row=2, column=0, sticky="nsew")
         main_content.grid_columnconfigure(0, weight=1)
         main_content.grid_columnconfigure(1, weight=0, minsize=240)
@@ -914,6 +891,31 @@ class PainelDashboard(ctk.CTkFrame):
             self.after(0, update_ui)
             
         threading.Thread(target=checker, daemon=True).start()
+
+    def _sincronizar_drive(self) -> None:
+        btn_txt_original = self.btn_sync_drive.cget("text")
+        self.btn_sync_drive.configure(text="⏳ Sincronizando pastas no Drive...", state="disabled")
+        
+        def worker():
+            from drive_pipeline_manager import executar_pipeline_drive
+            import supabase_client
+            
+            sb = supabase_client.get_client()
+            if sb:
+                qtd = executar_pipeline_drive(sb)
+                msg = f"{qtd} pastas sincronizadas no Drive e limpeza do Supabase concluída!"
+            else:
+                msg = "Erro: Cliente Supabase não configurado."
+                
+            self.after(0, lambda: self._fim_sincronizacao(btn_txt_original, msg))
+            
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _fim_sincronizacao(self, text_orig: str, msg: str) -> None:
+        self.btn_sync_drive.configure(text=text_orig, state="normal")
+        import tkinter.messagebox as messagebox
+        messagebox.showinfo("Sincronização Drive", msg)
 
     def carregar_dados_dashboard(self) -> None:
         """Busca licitações salvas no Supabase e popula a tabela no Dashboard (Assíncrono)."""
