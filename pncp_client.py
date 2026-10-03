@@ -375,6 +375,8 @@ def buscar_publicacoes_pncp(
 
     with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
         for mod in modalidades_para_consultar:
+            import time
+            time.sleep(1.0)  # Rate limit preventivo
             params: dict[str, Any] = {
                 "dataInicial": data_inicial,
                 "dataFinal": data_final,

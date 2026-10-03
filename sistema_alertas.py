@@ -218,6 +218,8 @@ class AlertasScanner:
             if not self._rodando:
                 break
             try:
+                import time
+                time.sleep(1.0)  # Rate limit para não disparar todas as requisições juntas
                 res = buscar_publicacoes_pncp(
                     uf=uf,
                     palavra_chave=kw,

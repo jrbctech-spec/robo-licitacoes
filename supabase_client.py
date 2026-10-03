@@ -271,13 +271,27 @@ def inserir_licitacao(dados: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Registro inserido/atualizado como dicionário.
     """
-    resposta = (
-        get_client()
-        .table("licitacoes")
-        .upsert(dados, on_conflict="numero_uasg,numero_pregao")
-        .execute()
-    )
-    return resposta.data[0] if resposta.data else {}
+    try:
+        resposta = (
+            get_client()
+            .table("licitacoes")
+            .upsert(dados, on_conflict="numero_uasg,numero_pregao")
+            .execute()
+        )
+        return resposta.data[0] if resposta.data else {}
+    except Exception as e:
+        if "PGRST204" in str(e) and "portal" in dados:
+            logger.warning("Coluna 'portal' ausente no banco de dados. Tentando inserir sem este campo (fallback).")
+            dados_fallback = dados.copy()
+            dados_fallback.pop("portal", None)
+            resposta = (
+                get_client()
+                .table("licitacoes")
+                .upsert(dados_fallback, on_conflict="numero_uasg,numero_pregao")
+                .execute()
+            )
+            return resposta.data[0] if resposta.data else {}
+        raise
 
 
 @retry(
