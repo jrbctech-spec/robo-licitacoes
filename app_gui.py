@@ -564,13 +564,24 @@ class PainelDashboard(ctk.CTkFrame):
         self.app = app
         self._build()
         self.carregar_dados_dashboard()
+        self.verificar_status_chrome()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
+
+        chrome_frame = ctk.CTkFrame(self, fg_color="transparent")
+        chrome_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 10))
+        chrome_frame.grid_columnconfigure(0, weight=1)
+        
+        self.lbl_chrome_status = ctk.CTkLabel(chrome_frame, text="⚪ Verificando Chrome...", font=ctk.CTkFont(size=12, weight="bold"), text_color=COR["text_secondary"])
+        self.lbl_chrome_status.pack(side="left", padx=10)
+        
+        btn_chrome = ctk.CTkButton(chrome_frame, text="🌐 Iniciar Chrome Licitações", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_cyan"], text_color="#080C14", hover_color=COR["accent_blue"], command=self._iniciar_chrome)
+        btn_chrome.pack(side="right", padx=10)
 
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
-        cards_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
+        cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
         cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         self.card_radar_pncp = MetricCard(cards_frame, titulo="Radar PNCP", valor_inicial="0", subtitulo="Certames Identificados", cor_destaque=COR["accent_cyan"], icone="🌐")
@@ -586,7 +597,7 @@ class PainelDashboard(ctk.CTkFrame):
         self.card_status.grid(row=0, column=3, padx=(6, 0), sticky="ew")
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
-        main_content.grid(row=1, column=0, sticky="nsew")
+        main_content.grid(row=2, column=0, sticky="nsew")
         main_content.grid_columnconfigure(0, weight=1)
         main_content.grid_columnconfigure(1, weight=0, minsize=240)
         main_content.grid_rowconfigure(0, weight=1)
@@ -837,6 +848,26 @@ class PainelDashboard(ctk.CTkFrame):
                 self.after(0, self.carregar_dados_dashboard)
                 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _iniciar_chrome(self) -> None:
+        import subprocess
+        try:
+            subprocess.Popen(["google-chrome", "--remote-debugging-port=9222"])
+            self.lbl_chrome_status.configure(text="🟢 Chrome Conectado (Porta 9222)", text_color=COR["accent_green"])
+        except Exception as e:
+            logging.error(f"Erro ao iniciar Chrome: {e}")
+
+    def verificar_status_chrome(self) -> None:
+        import requests
+        try:
+            resp = requests.get("http://localhost:9222/json/version", timeout=1)
+            if resp.status_code == 200:
+                self.lbl_chrome_status.configure(text="🟢 Chrome Conectado (Porta 9222)", text_color=COR["accent_green"])
+            else:
+                self.lbl_chrome_status.configure(text="⚪ Chrome Desconectado", text_color=COR["text_secondary"])
+        except Exception:
+            self.lbl_chrome_status.configure(text="⚪ Chrome Desconectado", text_color=COR["text_secondary"])
+        self.after(5000, self.verificar_status_chrome)
 
     def carregar_dados_dashboard(self) -> None:
         """Busca licitações salvas no Supabase e popula a tabela no Dashboard."""

@@ -35,7 +35,7 @@ logger = logging.getLogger("MonitorNuvem")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-BASE_PNCP_URL = "https://pncp.gov.br/pncp-api/v1"
+BASE_PNCP_URL = "https://pncp.gov.br/api/consulta/v1"
 
 CACHE_DIR = Path(__file__).resolve().parent.parent / "data"
 CACHE_FILE = CACHE_DIR / "certames_notificados.json"
@@ -101,8 +101,8 @@ def classificar_tipo_e_margem(objeto: str) -> dict:
 
 def consultar_pncp_uf(uf: str, data_referencia: datetime) -> list:
     data_str = data_referencia.strftime("%Y%m%d")
-    url = f"{BASE_PNCP_URL}/consultas/compras/quadro-aviso"
-    params = {"dataPublicacao": data_str, "uf": uf, "pagina": 1, "tamanhoPagina": 50}
+    url = f"{BASE_PNCP_URL}/contratacoes/publicacao"
+    params = {"dataInicial": data_str, "dataFinal": data_str, "uf": uf, "pagina": 1, "tamanhoPagina": 50, "codigoModalidadeContratacao": 6}
     
     logger.info(f"Consultando PNCP para UF={uf} na data={data_str}...")
     try:

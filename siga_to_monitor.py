@@ -208,11 +208,9 @@ class SigaMonitor:
         logger.info(f"Iniciando varredura no SIGA-TO: {SIGA_ABERTAS_URL}")
 
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
+            import chrome_connector
+            context, is_cdp = await chrome_connector.obter_contexto_navegador(p)
+            page = await chrome_connector.obter_aba_inteligente(context, "siga.to.gov.br")
 
             # Captura de respostas JSON da API do portal
             dados_capturados_api: List[Dict[str, Any]] = []
@@ -238,6 +236,8 @@ class SigaMonitor:
                 await page.wait_for_timeout(5000)  # Garante renderização Angular/Vue
             except Exception as e:
                 logger.warning(f"Timeout ao carregar página: {e}. Prosseguindo com leitura...")
+            
+            logger.info(f'URL atual: {page.url}')
 
             # 1. Triagem via dados de API interceptados (se houver)
             if dados_capturados_api:
@@ -270,6 +270,9 @@ class SigaMonitor:
             # 2. Triagem via DOM / Tabela visual
             linhas = await page.query_selector_all("table tbody tr")
             logger.info(f"Encontradas {len(linhas)} linhas na tabela visual.")
+            if len(linhas) == 0:
+                await page.screenshot(path='debug_siga.png')
+                logger.info("Screenshot de debug salvo em debug_siga.png")
 
             for tr in linhas:
                 texto_linha = await tr.inner_text()
@@ -308,7 +311,7 @@ class SigaMonitor:
                             self.processos_vistos.add(num_proc)
                             novas_oportunidades += 1
 
-            await browser.close()
+            await context.close()
 
         self._salvar_vistos()
         logger.info(f"Varredura concluída. Novas oportunidades notificadas: {novas_oportunidades}")
