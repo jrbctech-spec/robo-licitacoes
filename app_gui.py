@@ -97,29 +97,34 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 COR = {
-    "bg_dark": "#0B0F19",
-    "bg_card": "#151C2C",
-    "bg_card_hover": "#1C263B",
-    "border": "#222F43",
-    "border_focus": "#00F2FE",
-    "cyan_primary": "#00F2FE",
-    "cyan_hover": "#00C3CE",
-    "blue_accent": "#4FACFE",
-    "green_success": "#00E676",
-    "amber_warning": "#FFB300",
-    "orange_warning": "#FF9800",
-    "red_danger": "#FF5252",
-    "purple_accent": "#7C4DFF",
-    "text_primary": "#F8FAFC",
-    "text_secondary": "#94A3B8",
-    "text_muted": "#64748B",
+    # Fundos e Superfícies
+    "bg_deep": "#080C14",       # Fundo principal ultra-dark com tom azulado profundo
+    "bg_panel": "#0F172A",      # Painéis laterais e containers (Slate 900)
+    "bg_card": "#1E293B",       # Superfície dos cards de oportunidades (Slate 800)
+    "bg_input": "#0F172A",      # Campos de digitação e filtros
+    "border": "#334155",        # Bordas elegantes e sutis (Slate 700)
+    "border_focus": "#0EA5E9",  # Borda ativa em ciano
 
+    # Acentos Dinâmicos de Tecnologia
+    "accent_cyan": "#06B6D4",   # Destaque de IA / Tecnologia JRBC
+    "accent_blue": "#38BDF8",   # Links e identificação de órgãos
+    "accent_green": "#10B981",  # Oportunidades abertas / status OK
+    "accent_purple": "#818CF8", # Valores monetários e cifras R$
+    "accent_amber": "#F59E0B",  # Prazos e avisos
+    "accent_red": "#EF4444",    # Stop-Loss rígido / Modo Real
+
+    # Tipografia de Alto Contraste
+    "text_primary": "#F8FAFC",   # Branco puro para títulos e destaque
+    "text_secondary": "#94A3B8", # Cinza suave para descrições
+    "text_muted": "#64748B",     # Metadados e datas
+
+    # Pílulas / Status
     "pill_liderando_bg": "#052E16",
-    "pill_liderando_fg": "#4ADE80",
+    "pill_liderando_fg": "#10B981",
     "pill_superado_bg": "#451A03",
-    "pill_superado_fg": "#FBBF24",
+    "pill_superado_fg": "#F59E0B",
     "pill_piso_bg": "#450A0A",
-    "pill_piso_fg": "#FCA5A5",
+    "pill_piso_fg": "#EF4444",
     "pill_aguardando_bg": "#1E293B",
     "pill_aguardando_fg": "#94A3B8",
 }
@@ -401,7 +406,7 @@ class MetricCard(CardFrame):
         titulo: str,
         valor_inicial: str = "0",
         subtitulo: str = "",
-        cor_destaque: str = COR["cyan_primary"],
+        cor_destaque: str = COR["accent_cyan"],
         icone: str = "📊",
         **kwargs: Any,
     ) -> None:
@@ -484,10 +489,13 @@ class SearchableSelectPopup(ctk.CTkToplevel):
                 anchor="w", 
                 fg_color="transparent", 
                 text_color=COR["text_primary"],
-                hover_color=COR["bg_card_hover"],
+                hover_color=COR["bg_panel"],
                 command=lambda val=item: self._on_select(val)
             )
             btn.pack(fill="x", pady=2)
+            btn.bind("<MouseWheel>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
+            btn.bind("<Button-4>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(-1, "units"))
+            btn.bind("<Button-5>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(1, "units"))
             self.buttons.append(btn)
             
     def _on_search(self, event=None):
@@ -565,17 +573,17 @@ class PainelDashboard(ctk.CTkFrame):
         cards_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 12))
         cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
-        self.card_lics_ativas = MetricCard(cards_frame, titulo="Pregões / Dispensas", valor_inicial="0", subtitulo="Carregados Hoje", cor_destaque=COR["cyan_primary"], icone="📋")
-        self.card_lics_ativas.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        self.card_radar_pncp = MetricCard(cards_frame, titulo="Radar PNCP", valor_inicial="0", subtitulo="Certames Identificados", cor_destaque=COR["accent_cyan"], icone="🌐")
+        self.card_radar_pncp.grid(row=0, column=0, padx=(0, 6), sticky="ew")
 
-        self.card_liderando = MetricCard(cards_frame, titulo="Itens Liderando", valor_inicial="0", subtitulo="1ª Posição Confirmada", cor_destaque=COR["green_success"], icone="🏆")
-        self.card_liderando.grid(row=0, column=1, padx=6, sticky="ew")
+        self.card_servicos_ti = MetricCard(cards_frame, titulo="Serviços de TI", valor_inicial="0", subtitulo="Para JRBC TECH", cor_destaque=COR["accent_purple"], icone="🛠️")
+        self.card_servicos_ti.grid(row=0, column=1, padx=6, sticky="ew")
 
-        self.card_stop_loss = MetricCard(cards_frame, titulo="Stop-Loss Ativo", valor_inicial="0", subtitulo="Trava de Piso Protegida", cor_destaque=COR["amber_warning"], icone="🛡️")
-        self.card_stop_loss.grid(row=0, column=2, padx=6, sticky="ew")
+        self.card_volume = MetricCard(cards_frame, titulo="Volume Total", valor_inicial="R$ 0,00", subtitulo="Estimado Disponível", cor_destaque=COR["accent_green"], icone="💰")
+        self.card_volume.grid(row=0, column=2, padx=6, sticky="ew")
 
-        self.card_margem = MetricCard(cards_frame, titulo="Margem Protegida", valor_inicial="15.0%", subtitulo="Média Mínima", cor_destaque=COR["blue_accent"], icone="💰")
-        self.card_margem.grid(row=0, column=3, padx=(6, 0), sticky="ew")
+        self.card_status = MetricCard(cards_frame, titulo="Status do Sistema", valor_inicial="Online", subtitulo="SIGA-TO & TG Conectados", cor_destaque=COR["accent_blue"], icone="⚡")
+        self.card_status.grid(row=0, column=3, padx=(6, 0), sticky="ew")
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
         main_content.grid(row=1, column=0, sticky="nsew")
@@ -595,62 +603,11 @@ class PainelDashboard(ctk.CTkFrame):
         tbl_frame.grid_columnconfigure(0, weight=1)
         tbl_frame.grid_rowconfigure(0, weight=1)
 
-        style = ttk.Style()
-        style.theme_use('default')
-        style.configure('Treeview',
-            background='#181A20',
-            foreground='#FFFFFF',
-            fieldbackground='#181A20',
-            rowheight=30,
-            font=('Segoe UI', 10)
-        )
-        style.configure('Treeview.Heading',
-            background='#2B2D31',
-            foreground='#00E5FF',
-            font=('Segoe UI', 10, 'bold'),
-            relief='flat'
-        )
-        # Hack to force heading height via style layout
-        style.layout("Treeview.Heading", [
-            ("Treeview.Heading.cell", {'sticky': 'nswe'}),
-            ("Treeview.Heading.border", {'sticky':'nswe', 'children': [
-                ("Treeview.Heading.padding", {'sticky':'nswe', 'children': [
-                    ("Treeview.Heading.image", {'side':'right', 'sticky':''}),
-                    ("Treeview.Heading.text", {'sticky':'we'})
-                ]})
-            ]})
-        ])
-        style.configure("Treeview.Heading", padding=(0, 8)) # effectively ~32px height
-        style.map('Treeview.Heading', background=[('active', '#383A40')])
-        style.map('Treeview',
-            background=[('selected', '#2563EB')],
-            foreground=[('selected', '#FFFFFF')]
-        )
-
-        columns = ("uf", "pregao", "orgao", "valor", "status")
-        self.tree_lics = ttk.Treeview(tbl_frame, columns=columns, show="headings")
-        self.tree_lics.heading("uf", text="UF")
-        self.tree_lics.heading("pregao", text="Modalidade / Processo")
-        self.tree_lics.heading("orgao", text="Órgão / Objeto")
-        self.tree_lics.heading("valor", text="Valor Estimado")
-        self.tree_lics.heading("status", text="Status")
-        self.tree_lics.column("uf", width=50, anchor="center")
-        self.tree_lics.column("pregao", width=180, anchor="w")
-        self.tree_lics.column("orgao", width=250, anchor="w")
-        self.tree_lics.column("valor", width=100, anchor="center")
-        self.tree_lics.column("status", width=90, anchor="center")
-        self.tree_lics.bind("<Double-1>", self._on_tree_lics_double_click)
-        self.configurar_menu_contexto()
-        self.tree_lics.tag_configure("status_favorita", foreground="#10b981")
-        self.tree_lics.tag_configure("status_descartada", foreground="#6b7280")
-        self.tree_lics.tag_configure("status_normal", foreground="#FFFFFF")
-        self.tree_lics.tag_configure("evenrow", background="#181A20")
-        self.tree_lics.tag_configure("oddrow", background="#22242A")
-        self.tree_lics.grid(row=0, column=0, sticky="nsew")
-
-        sb = ctk.CTkScrollbar(tbl_frame, orientation="vertical", command=self.tree_lics.yview)
-        self.tree_lics.configure(yscrollcommand=sb.set)
-        sb.grid(row=0, column=1, sticky="ns")
+        self.scroll_lics = ctk.CTkScrollableFrame(tbl_frame, fg_color="transparent")
+        self.scroll_lics.grid(row=0, column=0, sticky="nsew")
+        self.tree_lics = self.scroll_lics # backward compatibility for existing references that expect a widget
+        
+        # self.configurar_menu_contexto() - context menu adapted for cards if needed
 
         card_dicas = CardFrame(main_content)
         card_dicas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
@@ -658,9 +615,9 @@ class PainelDashboard(ctk.CTkFrame):
 
         ctk.CTkLabel(card_dicas, text="⚡  Ações Rápidas & Atalhos", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 10))
 
-        ctk.CTkButton(card_dicas, text="📄  Adicionar Pregão / Dispensa", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["cyan_primary"], text_color="#000000", hover_color=COR["cyan_hover"], height=38, command=lambda: self.app.selecionar_aba("📄  Editais & Custos")).grid(row=1, column=0, sticky="ew", padx=16, pady=4)
-        ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["purple_accent"], text_color="#FFFFFF", height=38, command=self._buscar_no_pncp_bg).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
-        ctk.CTkButton(card_dicas, text="🚀  Console de Lances ao Vivo", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["green_success"], text_color="#000000", height=38, command=lambda: self.app.selecionar_aba("⚡  Console da Sessão")).grid(row=3, column=0, sticky="ew", padx=16, pady=4)
+        ctk.CTkButton(card_dicas, text="📄  Adicionar Pregão / Dispensa", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_cyan"], text_color="#000000", hover_color=COR["accent_cyan"], height=38, command=lambda: self.app.selecionar_aba("📄  Editais & Custos")).grid(row=1, column=0, sticky="ew", padx=16, pady=4)
+        ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_purple"], text_color="#FFFFFF", height=38, command=self._buscar_no_pncp_bg).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
+        ctk.CTkButton(card_dicas, text="🚀  Console de Lances ao Vivo", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_green"], text_color="#000000", height=38, command=lambda: self.app.selecionar_aba("⚡  Console da Sessão")).grid(row=3, column=0, sticky="ew", padx=16, pady=4)
 
     def _criar_barra_filtros(self, parent_frame: Any) -> None:
         frame_filtros = ctk.CTkFrame(parent_frame, fg_color="#111827")
@@ -680,18 +637,12 @@ class PainelDashboard(ctk.CTkFrame):
         ctk.CTkLabel(frame_filtros, text="UF / Região:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
         self.combo_uf = ctk.CTkComboBox(
             frame_filtros, 
-            values=[
-                "Todas as UFs", 
-                "Apenas TO (Local)", 
-                "TO e Vizinhos (TO, GO, PA, MA, BA, MT, PI)", 
-                "Região Norte (TO, PA, AP, AM, RO, RR, AC)",
-                "SP", "MG", "RJ", "PR", "SC", "RS"
-            ], 
+            values=["TODOS", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"],
             state="readonly", 
             width=260,
             command=lambda e: self.aplicar_filtros()
         )
-        self.combo_uf.set("Todas as UFs")
+        self.combo_uf.set("TODOS")
         self.combo_uf.pack(side="left", padx=(0, 15), pady=6)
 
         ctk.CTkLabel(frame_filtros, text="Status:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
@@ -721,22 +672,10 @@ class PainelDashboard(ctk.CTkFrame):
         btn_recarregar.pack(side="right", padx=10, pady=6)
 
     def configurar_menu_contexto(self) -> None:
-        import tkinter as tk
-        self.menu_contexto = tk.Menu(self.tree_lics, tearoff=0, bg="#1f2937", fg="#ffffff", activebackground="#374151", activeforeground="#00e5ff")
-        self.menu_contexto.add_command(label="⭐ Marcar como FAVORITA (Participar)", command=lambda: self.alterar_status_selecionado("FAVORITA"))
-        self.menu_contexto.add_command(label="❌ Marcar como DESCARTADA", command=lambda: self.alterar_status_selecionado("DESCARTADA"))
-        self.menu_contexto.add_command(label="🔄 Voltar para PENDENTE", command=lambda: self.alterar_status_selecionado("PENDENTE"))
-        self.menu_contexto.add_separator()
-        self.menu_contexto.add_command(label="🌐 Abrir Link do Edital no Navegador", command=lambda: self._on_tree_lics_double_click(None))
-
-        # Linux/Windows Botão 3
-        self.tree_lics.bind("<Button-3>", self.exibir_menu_contexto)
+        pass
 
     def exibir_menu_contexto(self, event: Any) -> None:
-        item_clicado = self.tree_lics.identify_row(event.y)
-        if item_clicado:
-            self.tree_lics.selection_set(item_clicado)
-            self.menu_contexto.post(event.x_root, event.y_root)
+        pass
 
     def alterar_status_selecionado(self, novo_status: str) -> None:
         selecionado = self.tree_lics.selection()
@@ -771,8 +710,8 @@ class PainelDashboard(ctk.CTkFrame):
         uf_selecionada = self.combo_uf.get()
         status_selecionado = self.combo_status.get()
 
-        for item in self.tree_lics.get_children():
-            self.tree_lics.delete(item)
+        for widget in self.scroll_lics.winfo_children():
+            widget.destroy()
 
         uf_vizinhos = ["TO", "GO", "PA", "MA", "BA", "MT", "PI"]
         uf_norte = ["TO", "PA", "AP", "AM", "RO", "RR", "AC"]
@@ -785,17 +724,12 @@ class PainelDashboard(ctk.CTkFrame):
             modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
             uf = (lic.get("uf") or "").upper().strip()
             status = (lic.get("status_analise") or "PENDENTE").upper().strip()
+            objeto = (lic.get("objeto") or "Sem descrição")
 
             if mod_selecionada != "Todas" and mod_selecionada.lower() not in modalidade_nome.lower():
                 continue
 
-            if uf_selecionada == "Apenas TO (Local)" and uf != "TO":
-                continue
-            elif uf_selecionada.startswith("TO e Vizinhos") and uf not in uf_vizinhos:
-                continue
-            elif uf_selecionada.startswith("Região Norte") and uf not in uf_norte:
-                continue
-            elif len(uf_selecionada) == 2 and uf != uf_selecionada:
+            if uf_selecionada != "TODOS" and uf != uf_selecionada:
                 continue
 
             if status_selecionado == "Ativas (Pendente + Favorita)" and status not in ["PENDENTE", "FAVORITA"]:
@@ -807,43 +741,70 @@ class PainelDashboard(ctk.CTkFrame):
             elif status_selecionado == "Descartadas" and status != "DESCARTADA":
                 continue
 
-            tag_status = "status_favorita" if status == "FAVORITA" else ("status_descartada" if status == "DESCARTADA" else "status_normal")
-            
             sigla = "PE" if "Pregão" in modalidade_nome else ("Dispensa" if "Dispensa" in modalidade_nome else modalidade_nome)
             numero = lic.get("numero_pregao", "S/N")
             uasg = lic.get("numero_uasg", "S/ UASG")
             pregao_formatado = f"{sigla} {numero} (UASG {uasg})"
             
-            orgao_resumo = f"[{uf}] {lic.get('orgao_nome', '')[:25]} - {lic.get('objeto', '')[:45]}..."
-            valor_ou_itens = f"R$ {float(lic.get('valor_estimado') or 0):,.2f}"
+            valor = float(lic.get('valor_estimado') or 0.0)
             
-            data_abertura = lic.get("data_abertura") or "Não informada"
-            if data_abertura and "T" in data_abertura and len(data_abertura) >= 16:
+            # CUIDADO COM PALAVRAS DE TI
+            ti_kws = ["tecnologia", "informática", "software", "computador", "rede", "suporte", "cabeamento", "notebook", "nobreak"]
+            is_ti = any(kw in objeto.lower() for kw in ti_kws)
+
+            # --- Criação do Card ---
+            card = ctk.CTkFrame(self.scroll_lics, fg_color=COR["bg_card"], corner_radius=10, border_width=1, border_color=COR["border"])
+            card.pack(fill="x", pady=6, padx=4)
+            card.grid_columnconfigure(1, weight=1)
+            
+            # Linha 0: Badges
+            badges_frame = ctk.CTkFrame(card, fg_color="transparent")
+            badges_frame.grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 4))
+            
+            # Badge Tipo
+            tipo_bg = COR["accent_cyan"] if is_ti else COR["accent_purple"]
+            tipo_text = " 🛠️ SERVIÇO " if is_ti else " 📦 PRODUTO "
+            ctk.CTkLabel(badges_frame, text=tipo_text, fg_color=tipo_bg, text_color="#080C14", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
+            
+            # Badge Modalidade
+            mod_bg = COR["border"]
+            mod_text = f" {sigla.upper()} "
+            ctk.CTkLabel(badges_frame, text=mod_text, fg_color=mod_bg, text_color=COR["text_primary"], corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
+
+            # Prazo
+            import datetime
+            prazo = " ⏳ PRAZO: EM BREVE "
+            if lic.get("data_abertura"):
                 try:
-                    data_abertura = f"{data_abertura[8:10]}/{data_abertura[5:7]}/{data_abertura[0:4]} {data_abertura[11:16]}"
+                    dt = datetime.datetime.fromisoformat(lic.get("data_abertura").replace("Z", "+00:00"))
+                    diff = dt - datetime.datetime.now(datetime.timezone.utc)
+                    if diff.total_seconds() > 0 and diff.total_seconds() < 48 * 3600:
+                        ctk.CTkLabel(badges_frame, text=" ⏳ < 48H ", fg_color=COR["accent_amber"], text_color="#080C14", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
                 except:
                     pass
-            
-            link = lic.get("link_edital", "Sem Link")
-            import uuid
-            lic_id = lic.get("id") or str(uuid.uuid4())
 
-            tag_row = "evenrow" if row_idx % 2 == 0 else "oddrow"
-            self.tree_lics.insert(
-                "", 
-                "end", 
-                iid=lic_id,
-                values=(uf, pregao_formatado, orgao_resumo, valor_ou_itens, status),
-                tags=(tag_status, tag_row)
-            )
-            row_idx += 1
+            # Linhas de Texto
+            orgao = f"[{uf}] {lic.get('orgao_nome', '')[:45]}"
+            ctk.CTkLabel(card, text=orgao, font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=16)
+            ctk.CTkLabel(card, text=objeto[:100] + ("..." if len(objeto) > 100 else ""), font=ctk.CTkFont(size=12), text_color=COR["text_secondary"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 12))
+
+            # Lado Direito (Valores e Ações)
+            val_str = f"R$ {valor:,.2f}"
+            ctk.CTkLabel(card, text=val_str, font=ctk.CTkFont(size=18, weight="bold"), text_color=COR["accent_green"]).grid(row=1, column=2, sticky="e", padx=16, rowspan=2)
+
+            link = lic.get("link_edital", "")
+            btn = ctk.CTkButton(card, text="Acessar Processo", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=20, width=120)
+            if link:
+                import webbrowser
+                btn.configure(command=lambda l=link: webbrowser.open(l))
+            btn.grid(row=2, column=2, sticky="e", padx=16, pady=(0, 12))
             
             total_hoje += 1
             if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
                 participando += 1
                 
-        self.card_lics_ativas.atualizar(str(total_hoje))
-        self.card_liderando.atualizar(str(participando))
+        self.card_radar_pncp.atualizar(str(total_hoje))
+        self.card_servicos_ti.atualizar(str(participando))
 
     def _on_tree_lics_double_click(self, event: Any) -> None:
         item = self.tree_lics.selection()
@@ -860,29 +821,15 @@ class PainelDashboard(ctk.CTkFrame):
                     break
 
     def atualizar_catalogo(self) -> None:
-        for r in self.tree_lics.get_children():
-            self.tree_lics.delete(r)
-
-        cat = self.app.catalogo_licitacoes
-        self.card_lics_ativas.atualizar(str(len(cat)))
-
-        for nome_chave, res in cat.items():
-            pregao_str = f"Pregão {res.numero_pregao or 'S/N'}"
-            if res.numero_uasg:
-                pregao_str += f" (UASG {res.numero_uasg})"
-            orgao_str = getattr(res, 'orgao_comprador', getattr(res, 'orgao', 'Órgão Não Informado'))
-            objeto_str = getattr(res, 'objeto_licitacao', getattr(res, 'objeto', 'Sem descrição'))
-            descricao_exibicao = orgao_str if orgao_str != "Órgão Não Informado" else objeto_str
-            qtd_itens = len(res.itens)
-
-            self.tree_lics.insert("", "end", values=(pregao_str, descricao_exibicao[:50], qtd_itens, "PRONTO", "-", "-"))
+        # Backward compatibility for old calls that expected tree_lics to insert
+        pass
 
     def _buscar_no_pncp_bg(self) -> None:
         import buscador_pncp
         
         def worker():
             try:
-                self.card_lics_ativas.atualizar("⏳", "Buscando...")
+                self.card_radar_pncp.atualizar("⏳", "Buscando...")
                 buscador_pncp.executar_varredura_completa()
             except Exception as e:
                 logging.error(f"Erro na varredura PNCP: {e}")
@@ -937,7 +884,7 @@ class PainelEditais(ctk.CTkFrame):
         card_seletor.grid_columnconfigure(1, weight=1)
 
         import tkinter as tk
-        ctk.CTkLabel(card_seletor, text="☁️  Selecione a Licitação na Nuvem:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["cyan_primary"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
+        ctk.CTkLabel(card_seletor, text="☁️  Selecione a Licitação na Nuvem:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["accent_cyan"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
         
         self.cmb_certames = SearchableDropdown(
             card_seletor,
@@ -947,7 +894,7 @@ class PainelEditais(ctk.CTkFrame):
         )
         self.cmb_certames.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
 
-        btn_remover = ctk.CTkButton(card_seletor, text="🔄 Atualizar Nuvem", width=120, fg_color=COR["purple_accent"], text_color="#FFFFFF", command=self.atualizar_lista_certames)
+        btn_remover = ctk.CTkButton(card_seletor, text="🔄 Atualizar Nuvem", width=120, fg_color=COR["accent_purple"], text_color="#FFFFFF", command=self.atualizar_lista_certames)
         btn_remover.grid(row=0, column=2, padx=(4, 16), pady=10)
 
         # 2. Barra de Regras de Lances
@@ -967,7 +914,7 @@ class PainelEditais(ctk.CTkFrame):
         self.txt_intervalo.insert(0, "0.01")
         self.txt_intervalo.pack(side="left", padx=8)
 
-        btn_salvar_regra = ctk.CTkButton(card_regras, text="💾 Salvar Regra no Supabase", fg_color=COR["green_success"], text_color="#000000", command=self._salvar_regras_supabase)
+        btn_salvar_regra = ctk.CTkButton(card_regras, text="💾 Salvar Regra no Supabase", fg_color=COR["accent_green"], text_color="#000000", command=self._salvar_regras_supabase)
         btn_salvar_regra.pack(side="right", padx=(8, 16), pady=10)
 
         # 3. Tabela de Itens & Stop Loss
@@ -1017,7 +964,7 @@ class PainelEditais(ctk.CTkFrame):
             card_itens,
             text="💡 Dica: Dê um duplo-clique no item para ajustar Custo Real / Margem. O Stop-Loss atualiza automaticamente na nuvem.",
             font=ctk.CTkFont(size=11, slant="italic"),
-            text_color=COR["cyan_primary"],
+            text_color=COR["accent_cyan"],
         )
         lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
         btn_cotar = ctk.CTkButton(card_itens, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre)
@@ -1078,7 +1025,66 @@ class PainelEditais(ctk.CTkFrame):
         if idx >= 0 and hasattr(self, "dados_nuvem"):
             lic = self.dados_nuvem[idx]
             self.licitacao_ativa = lic
+            
+            # Extrair CNPJ, Ano, Sequencial e carregar itens reais do PNCP
+            def worker():
+                link = lic.get("link_sistema", "")
+                if "pncp.gov.br" in link:
+                    try:
+                        from pncp_client import extrair_params_pncp, carregar_certame_pncp
+                        cnpj, ano, seq = extrair_params_pncp(link)
+                        if cnpj and ano and seq:
+                            self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                            self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando itens no PNCP...", "", "", "", "", "", "")))
+                            
+                            resultado = carregar_certame_pncp(cnpj, ano, seq)
+                            self.after(0, lambda: self._exibir_itens_pncp(lic, resultado))
+                            return
+                    except Exception as e:
+                        import logging
+                        logging.error(f"Erro ao buscar PNCP: {e}")
+                
+                # Fallback se falhar ou não for PNCP
+                self.after(0, lambda: self._exibir_itens(lic))
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _exibir_itens_pncp(self, lic, resultado):
+        for row in self.tree_itens.get_children():
+            self.tree_itens.delete(row)
+        
+        if not resultado.itens:
             self._exibir_itens(lic)
+            return
+
+        for item in resultado.itens:
+            valor = item.valor_referencia or 0.0
+            custo_real = item.custo_real or valor * 0.5
+            piso = item.piso_preco or valor * 0.7
+            margem = ((valor - piso) / valor * 100) if valor > 0 else 0.0
+
+            val_ref_str = f"R$ {valor:,.2f}"
+            custo_str = f"R$ {custo_real:,.2f}"
+            piso_str = f"R$ {piso:,.2f}"
+            margem_str = f"{margem:.1f}%"
+
+            self.tree_itens.insert(
+                "",
+                "end",
+                iid=f"{lic.get('id')}_{item.numero_item}",
+                values=(
+                    str(item.numero_item),
+                    item.descricao[:100],
+                    str(item.quantidade),
+                    item.unidade_medida,
+                    val_ref_str,
+                    custo_str,
+                    margem_str,
+                    piso_str,
+                ),
+                tags=("evenrow",)
+            )
 
     def _exibir_itens(self, lic: dict) -> None:
         for row in self.tree_itens.get_children():
@@ -1238,7 +1244,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_top,
             text="Disputar Licitação:",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COR["cyan_primary"],
+            text_color=COR["accent_cyan"],
         ).grid(row=0, column=1, padx=(16, 4), sticky="e")
 
         self.cmb_disputa = SearchableDropdown(
@@ -1254,7 +1260,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_top,
             text="Modo Simulação (Dry-Run)",
             font=ctk.CTkFont(weight="bold"),
-            progress_color=COR["green_success"],
+            progress_color=COR["accent_green"],
             command=self._on_modo_switch,
         )
         self.sw_modo.select()
@@ -1284,7 +1290,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_actions,
             text="🔑 Login Gov.br",
             font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=COR["orange_warning"],
+            fg_color=COR["accent_amber"],
             text_color="#000000",
             height=34,
             width=115,
@@ -1296,7 +1302,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_actions,
             text="🌐 Abrir Sala",
             font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color=COR["blue_accent"],
+            fg_color=COR["accent_blue"],
             text_color="#FFFFFF",
             height=34,
             width=95,
@@ -1308,7 +1314,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_actions,
             text="▶️  Iniciar Disputa",
             font=ctk.CTkFont(weight="bold"),
-            fg_color=COR["green_success"],
+            fg_color=COR["accent_green"],
             text_color="#000000",
             height=34,
             command=self._iniciar_sessao,
@@ -1319,7 +1325,7 @@ class PainelSessao(ctk.CTkFrame):
             ctrl_actions,
             text="⏹️  Parar Disputa",
             font=ctk.CTkFont(weight="bold"),
-            fg_color=COR["red_danger"],
+            fg_color=COR["accent_red"],
             text_color="#FFFFFF",
             height=34,
             state="disabled",
@@ -1388,7 +1394,7 @@ class PainelSessao(ctk.CTkFrame):
             text="Limpar Log",
             width=80,
             height=24,
-            fg_color=COR["bg_card_hover"],
+            fg_color=COR["bg_panel"],
             font=ctk.CTkFont(size=10),
             command=self._limpar_log,
         ).grid(row=0, column=1, sticky="e")
@@ -1396,7 +1402,7 @@ class PainelSessao(ctk.CTkFrame):
         self.txt_log = ctk.CTkTextbox(
             card_log,
             font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color=COR["bg_dark"],
+            fg_color=COR["bg_deep"],
             text_color=COR["text_primary"],
         )
         self.txt_log.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
@@ -1444,7 +1450,7 @@ class PainelSessao(ctk.CTkFrame):
             text="💬 Enviar",
             width=80,
             command=self._enviar_mensagem_copiloto,
-            fg_color=COR["blue_accent"],
+            fg_color=COR["accent_blue"],
         )
         self.btn_enviar_chat.grid(row=0, column=1)
 
@@ -1456,7 +1462,7 @@ class PainelSessao(ctk.CTkFrame):
             text="⚡ Analisar Situação",
             height=28,
             command=lambda: self._enviar_mensagem_copiloto("Analise a situação atual da disputa e sugira o próximo passo."),
-            fg_color=COR["bg_card_hover"],
+            fg_color=COR["bg_panel"],
         )
         self.btn_analisar.pack(side="left", padx=(0, 6), expand=True, fill="x")
 
@@ -1465,16 +1471,16 @@ class PainelSessao(ctk.CTkFrame):
             text="⚖️ Checar Inexequibilidade",
             height=28,
             command=lambda: self._enviar_mensagem_copiloto("Os lances atuais são inexequíveis segundo o edital ou a Lei 14.133?"),
-            fg_color=COR["bg_card_hover"],
+            fg_color=COR["bg_panel"],
         )
         self.btn_inexequibilidade.pack(side="left", padx=(6, 0), expand=True, fill="x")
 
     def _on_modo_switch(self) -> None:
         dry_run = bool(self.sw_modo.get())
         if dry_run:
-            self.sw_modo.configure(text="Modo Simulação (Dry-Run)", progress_color=COR["green_success"])
+            self.sw_modo.configure(text="Modo Simulação (Dry-Run)", progress_color=COR["accent_green"])
         else:
-            self.sw_modo.configure(text="⚠️ MODO REAL (Envio de Lances)", progress_color=COR["red_danger"])
+            self.sw_modo.configure(text="⚠️ MODO REAL (Envio de Lances)", progress_color=COR["accent_red"])
 
     def _on_disputa_mudou(self, escolha: str) -> None:
         self.atualizar_tabela_inicial()
@@ -1829,7 +1835,7 @@ class PainelPNCP(ctk.CTkFrame):
         self.txt_kw = ctk.CTkEntry(card_filtros, placeholder_text="Ex: computador, limpeza, expediente...", width=260)
         self.txt_kw.grid(row=1, column=3, padx=4, pady=8, sticky="ew")
 
-        ctk.CTkButton(card_filtros, text="🔍 Pesquisar PNCP", fg_color=COR["purple_accent"], text_color="#FFFFFF", font=ctk.CTkFont(weight="bold"), height=34, command=self._buscar_pncp).grid(row=1, column=4, padx=(8, 16), pady=8)
+        ctk.CTkButton(card_filtros, text="🔍 Pesquisar PNCP", fg_color=COR["accent_purple"], text_color="#FFFFFF", font=ctk.CTkFont(weight="bold"), height=34, command=self._buscar_pncp).grid(row=1, column=4, padx=(8, 16), pady=8)
 
         # Resultados
         card_res = CardFrame(self)
@@ -1900,7 +1906,7 @@ class PainelServicos(ctk.CTkFrame):
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
-        ctk.CTkLabel(header_frame, text="🛠️ Serviços & Field Service", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        ctk.CTkLabel(header_frame, text="🛠️ Serviços", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         
         def _iniciar_siga_to():
             import threading
@@ -1934,7 +1940,7 @@ class PainelServicos(ctk.CTkFrame):
         btn_start_to = ctk.CTkButton(header_frame, text="⚡ START / BUSCAR TOCANTINS", fg_color="#10b981", command=_iniciar_siga_to)
         btn_start_to.pack(side="right", padx=(10, 0))
         
-        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_servicos_nuvem)
+        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["accent_purple"], command=self.carregar_servicos_nuvem)
         btn_refresh.pack(side="right")
         
         # Table
@@ -1982,7 +1988,16 @@ class PainelServicos(ctk.CTkFrame):
             key = os.getenv("SUPABASE_KEY")
             sb = create_client(url, key)
             res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'SERVICO').order('atualizado_em', desc=True).execute()
-            self.dados_servicos = res.data
+            
+            # Filtro para Tecnologia da Informação (TI e Infraestrutura) e Abertos
+            dados = []
+            ti_kws = ["cabeamento", "rede", "manutenção de computador", "notebook", "nobreak", "cftv", "suporte", "servidor", "proxmox", "linux", "firewall", "backup", "tecnologia", "informática"]
+            for srv in res.data:
+                obj = (srv.get("objeto") or "").lower()
+                status = (srv.get("status_analise") or "pendente").lower()
+                if status not in ["encerrada", "descartada"] and any(kw in obj for kw in ti_kws):
+                    dados.append(srv)
+            self.dados_servicos = dados
         except Exception as e:
             print("Erro ao carregar serviços:", e)
             self.dados_servicos = []
@@ -2026,7 +2041,7 @@ class PainelServicos(ctk.CTkFrame):
         ctk.CTkLabel(top, text=srv.get("objeto", ""), wraplength=450).pack()
         
         atendimento = "Remoto" if srv.get("uf") != "TO" else "Presencial (Field Service)"
-        ctk.CTkLabel(top, text=f"📍 Tipo de Atendimento: {atendimento}", font=ctk.CTkFont(weight="bold", text_color=COR["cyan_primary"])).pack(pady=(15, 5))
+        ctk.CTkLabel(top, text=f"📍 Tipo de Atendimento: {atendimento}", font=ctk.CTkFont(weight="bold"), text_color=COR["accent_cyan"]).pack(pady=(15, 5))
         
         link = srv.get("link_edital")
         if link:
@@ -2120,7 +2135,7 @@ class PainelProdutos(ctk.CTkFrame):
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
         ctk.CTkLabel(header_frame, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         
-        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["purple_accent"], command=self.carregar_produtos_nuvem)
+        btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["accent_purple"], command=self.carregar_produtos_nuvem)
         btn_refresh.pack(side="right")
         
         from tkinter import ttk
@@ -2271,7 +2286,7 @@ class App(ctk.CTk):
         self.title("🤖 Robô de Licitações – Multi-Pregão & Dispensas (Lei 14.133/2021)")
         self.geometry("1280x800")
         self.minsize(1024, 720)
-        self.configure(fg_color=COR["bg_dark"])
+        self.configure(fg_color=COR["bg_deep"])
 
         # Catálogo Dinâmico Multi-Certame
         self.catalogo_licitacoes: Dict[str, ResultadoEdital] = {}
@@ -2301,17 +2316,16 @@ class App(ctk.CTk):
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_rowconfigure(9, weight=1)
 
-        lbl_logo = ctk.CTkLabel(sidebar, text="🤖  ROBÔ LICITAÇÕES", font=ctk.CTkFont(size=16, weight="bold"), text_color=COR["cyan_primary"])
+        lbl_logo = ctk.CTkLabel(sidebar, text="🤖  ROBÔ LICITAÇÕES", font=ctk.CTkFont(size=16, weight="bold"), text_color=COR["accent_cyan"])
         lbl_logo.grid(row=0, column=0, padx=16, pady=(16, 20), sticky="w")
 
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
         abas = [
             ("📊  Dashboard", "dashboard"),
-            ("🛠️  Serviços & Field Service", "servicos"),
+            ("🛠️  Serviços", "servicos"),
             ("📦  Venda de Produtos", "produtos"),
             ("📄  Editais & Custos", "editais"),
             ("⚡  Console da Sessão", "sessao"),
-            ("🌐  Oportunidades PNCP", "pncp"),
         ]
 
         for idx, (nome, id_aba) in enumerate(abas, 1):
@@ -2322,14 +2336,15 @@ class App(ctk.CTk):
                 anchor="w",
                 fg_color="transparent",
                 text_color=COR["text_secondary"],
-                hover_color=COR["bg_card_hover"],
+                hover_color="#1E293B",
                 height=38,
+                corner_radius=10,
                 command=lambda n=nome: self.selecionar_aba(n),
             )
             btn.grid(row=idx, column=0, sticky="ew", padx=10, pady=2)
             self._nav_buttons[nome] = btn
 
-        lbl_status_lic = ctk.CTkLabel(sidebar, text="✅ Licença Ativa (Full)", font=ctk.CTkFont(size=11), text_color=COR["green_success"])
+        lbl_status_lic = ctk.CTkLabel(sidebar, text="✅ Licença Ativa (Full)", font=ctk.CTkFont(size=11), text_color=COR["accent_green"])
         lbl_status_lic.grid(row=9, column=0, padx=16, pady=16, sticky="w")
 
         # Container de Conteúdo
@@ -2347,11 +2362,10 @@ class App(ctk.CTk):
         self.painel_pncp = PainelPNCP(self.tab_container, app=self)
 
         self._paineis["📊  Dashboard"] = self.painel_dashboard
-        self._paineis["🛠️  Serviços & Field Service"] = self.painel_servicos
+        self._paineis["🛠️  Serviços"] = self.painel_servicos
         self._paineis["📦  Venda de Produtos"] = self.painel_produtos
         self._paineis["📄  Editais & Custos"] = self.painel_editais
         self._paineis["⚡  Console da Sessão"] = self.painel_sessao
-        self._paineis["🌐  Oportunidades PNCP"] = self.painel_pncp
 
         for p in self._paineis.values():
             p.grid(row=0, column=0, sticky="nsew")
@@ -2361,7 +2375,7 @@ class App(ctk.CTk):
     def selecionar_aba(self, nome_aba: str) -> None:
         for n, btn in self._nav_buttons.items():
             if n == nome_aba:
-                btn.configure(fg_color=COR["bg_card_hover"], text_color=COR["cyan_primary"])
+                btn.configure(fg_color=COR["accent_cyan"], text_color="#080C14")
             else:
                 btn.configure(fg_color="transparent", text_color=COR["text_secondary"])
 
