@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 CACHE_FILE = Path(os.path.expanduser("~")) / ".robo_licitacoes_cache.json"
 
@@ -9,7 +9,7 @@ def carregar_cache() -> Dict[str, Any]:
     if CACHE_FILE.exists():
         try:
             with open(CACHE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                return cast(Dict[str, Any], json.load(f))
         except Exception:
             pass
     return {}

@@ -159,16 +159,19 @@ class SigaMonitor:
 
     def _salvar_supabase(self, num_proc: str, orgao: str, objeto: str, data_fim: str, link: str):
         dados_licitacao = {
-            "numero_uasg": "SIGA-TO",  # Evita conflitos com UASGs numéricas
+            "numero_uasg": "SIGA_TO",  # Evita conflitos com UASGs numéricas
             "numero_pregao": num_proc,
             "orgao": orgao,
+            "orgao_nome": orgao,
             "objeto": objeto[:2000],
             "modalidade": "Compra Direta Estadual (SIGA-TO)",
             "uf": "TO",
             "municipio": "Palmas/TO",
             "link_sistema": link,
-            "status_analise": "pendente",
-            "portal": "SIGA_TO"
+            "status": "pendente",
+            "status_analise": "NOVA",
+            "portal": "SIGA_TO",
+            "prioridade": "MEDIA"
         }
         
         # Tenta formatar data se for DD/MM/YYYY HH:MM
@@ -210,6 +213,9 @@ class SigaMonitor:
         async with async_playwright() as p:
             import chrome_connector
             context, is_cdp = await chrome_connector.obter_contexto_navegador(p)
+            if context is None:
+                logger.error("Não foi possível obter contexto do navegador.")
+                return 0
             page = await chrome_connector.obter_aba_inteligente(context, "siga.to.gov.br")
 
             # Captura de respostas JSON da API do portal

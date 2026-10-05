@@ -628,6 +628,21 @@ Exemplos:
         default=None,
         help="Nível de log (sobrescreve LOG_LEVEL do .env).",
     )
+    parser.add_argument(
+        "--cadastrar",
+        action="store_true",
+        help="Aciona a automação de cadastro de proposta no Comprasnet",
+    )
+    parser.add_argument(
+        "--uasg",
+        type=str,
+        help="Número da UASG para cadastro de proposta",
+    )
+    parser.add_argument(
+        "--compra",
+        type=str,
+        help="Número da Compra/Pregão para cadastro de proposta",
+    )
     return parser.parse_args()
 
 
@@ -640,6 +655,28 @@ def main() -> None:
     Use --diagnostics para executar o auto-teste de conexões.
     """
     args = parse_args()
+
+    if args.cadastrar:
+        if not args.uasg or not args.compra:
+            print("Erro: Os parâmetros --uasg e --compra são obrigatórios para --cadastrar.")
+            sys.exit(1)
+        print(f"Iniciando automação de cadastro para UASG: {args.uasg} | Compra: {args.compra}")
+        
+        from browser_bot import BrowserBot
+        from engine import MotorDecisao
+        import json
+        
+        bot = BrowserBot(motor=MotorDecisao(dry_run=False))
+        # Para testes via CLI, passa lista vazia ou carrega de 'itens_proposta.json' se existir
+        itens_proposta = []
+        try:
+            with open("itens_proposta.json", "r") as f:
+                itens_proposta = json.load(f)
+        except Exception:
+            print("Aviso: 'itens_proposta.json' não encontrado. Abrindo tela apenas para navegação.")
+            
+        bot.cadastrar_proposta_comprasnet(args.uasg, args.compra, itens_proposta)
+        sys.exit(0)
 
     if args.diagnostics:
         from diagnostics import executar_diagnostico_cli

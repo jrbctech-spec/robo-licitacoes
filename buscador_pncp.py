@@ -212,7 +212,8 @@ def processar_outras_fontes(oportunidades, notificados):
             "termo_busca": "TI",
             "modalidade": item.get("modalidade"),
             "tipo_contratacao": "SERVICO",
-            "status_analise": "pendente",
+            "status": "pendente",
+            "status_analise": "NOVA",
             "atualizado_em": datetime.now(timezone.utc).isoformat(),
             "portal": "COMPRAS_GOV"
         }

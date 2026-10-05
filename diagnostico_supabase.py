@@ -2,6 +2,7 @@ import os
 import sys
 from dotenv import load_dotenv
 from supabase import create_client
+from postgrest.types import CountMethod
 from collections import Counter
 
 def main():
@@ -17,7 +18,7 @@ def main():
     print("\n=== 1. ESTRUTURA E COLUNAS ===")
     try:
         res = sb.table("licitacoes").select("*").limit(1).execute()
-        if res.data:
+        if res.data and isinstance(res.data[0], dict):
             colunas = list(res.data[0].keys())
             print(f"Colunas encontradas: {len(colunas)} colunas.")
             print(f" -> Coluna 'portal' existe? {'✅ Sim' if 'portal' in colunas else '❌ NÃO'}")
@@ -31,12 +32,12 @@ def main():
     tabelas = ["licitacoes", "itens_licitacao", "logs_sessao"]
     for t in tabelas:
         try:
-            res = sb.table(t).select("id", count="exact").limit(1).execute()
+            res = sb.table(t).select("id", count=CountMethod.exact).limit(1).execute()
             print(f"Total em {t}: {res.count}")
         except Exception as e:
             # logs_sessao does not have 'id', might fail
             try:
-                res2 = sb.table(t).select("*", count="exact").limit(1).execute()
+                res2 = sb.table(t).select("*", count=CountMethod.exact).limit(1).execute()
                 print(f"Total em {t}: {res2.count}")
             except Exception as e2:
                 print(f"Total em {t}: Erro ({e2})")
@@ -45,7 +46,7 @@ def main():
     try:
         res_dup = sb.table("licitacoes").select("numero_pregao").limit(3000).execute()
         if res_dup.data:
-            numeros = [r.get("numero_pregao") for r in res_dup.data if r.get("numero_pregao")]
+            numeros = [r.get("numero_pregao") for r in res_dup.data if isinstance(r, dict) and r.get("numero_pregao")]
             contagem = Counter(numeros)
             duplicados = {k: v for k, v in contagem.items() if v > 1}
             if duplicados:
@@ -62,8 +63,10 @@ def main():
         res_logs = sb.table("logs_sessao").select("*").in_("nivel", ["ERROR", "WARNING"]).order("registrado_em", desc=True).limit(10).execute()
         if res_logs.data:
             for log in res_logs.data:
-                msg = str(log.get('mensagem'))[:80] + ("..." if len(str(log.get('mensagem'))) > 80 else "")
-                print(f"[{log.get('registrado_em')[:19]}] {log.get('nivel')}: {msg}")
+                if isinstance(log, dict):
+                    msg = str(log.get('mensagem'))[:80] + ("..." if len(str(log.get('mensagem'))) > 80 else "")
+                    registrado = log.get('registrado_em') or ''
+                    print(f"[{str(registrado)[:19]}] {log.get('nivel')}: {msg}")
         else:
             print(" ✅ Nenhum erro ou warning recente encontrado na tabela.")
     except Exception as e:

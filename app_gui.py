@@ -453,109 +453,7 @@ def disable_mouse_scroll(combo):
     except Exception:
         pass
 
-class SearchableSelectPopup(ctk.CTkToplevel):
-    def __init__(self, master, values, on_select_callback, **kwargs):
-        super().__init__(master, **kwargs)
-        self.title("Selecionar Opção")
-        self.geometry("600x450")
-        self.transient(master)
-        self.grab_set()
-        
-        self.values = values
-        self.on_select_callback = on_select_callback
-        
-        self.grid_rowconfigure(1, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-        
-        self.entry_search = ctk.CTkEntry(self, placeholder_text="🔎 Digite para filtrar (ex: TO, Palmas, Pregão)...")
-        self.entry_search.grid(row=0, column=0, padx=16, pady=16, sticky="ew")
-        self.entry_search.bind("<KeyRelease>", self._on_search)
-        
-        self.scroll_frame = ctk.CTkScrollableFrame(self)
-        self.scroll_frame.grid(row=1, column=0, padx=16, pady=(0, 16), sticky="nsew")
-        
-        self.buttons = []
-        self._populate(self.values)
-        self.entry_search.focus()
-        
-    def _populate(self, items):
-        for btn in self.buttons:
-            btn.destroy()
-        self.buttons.clear()
-        
-        for item in items:
-            btn = ctk.CTkButton(
-                self.scroll_frame, 
-                text=item, 
-                anchor="w", 
-                fg_color="transparent", 
-                text_color=COR["text_primary"],
-                hover_color=COR["bg_panel"],
-                command=lambda val=item: self._on_select(val)
-            )
-            btn.pack(fill="x", pady=2)
-            btn.bind("<MouseWheel>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
-            btn.bind("<Button-4>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(-1, "units"))
-            btn.bind("<Button-5>", lambda e: self.scroll_frame._parent_canvas.yview_scroll(1, "units"))
-            self.buttons.append(btn)
-            
-    def _on_search(self, event=None):
-        query = self.entry_search.get().lower()
-        if not query:
-            filtered = self.values
-        else:
-            filtered = [v for v in self.values if query in v.lower()]
-        self._populate(filtered)
-        
-    def _on_select(self, value):
-        self.on_select_callback(value)
-        self.destroy()
 
-class SearchableDropdown(ctk.CTkFrame):
-    def __init__(self, master, values=None, command=None, width=200, **kwargs):
-        super().__init__(master, fg_color="transparent", **kwargs)
-        self.values = values or []
-        self.command = command
-        self.current_value = ""
-        self._values = self.values
-        
-        self.btn = ctk.CTkButton(
-            self, 
-            text="Selecione...", 
-            width=width,
-            anchor="w",
-            fg_color="#1F2937",
-            text_color="#F8FAFC",
-            border_width=1,
-            border_color="#374151",
-            hover_color="#374151",
-            command=self._open_popup
-        )
-        self.btn.pack(fill="both", expand=True)
-        
-    def configure(self, values=None, **kwargs):
-        if values is not None:
-            self.values = values
-            self._values = values
-            if not self.current_value and values:
-                self.set(values[0])
-        
-    def set(self, value):
-        self.current_value = value
-        self.btn.configure(text=value[:70] + ("..." if len(value) > 70 else ""))
-        
-    def get(self):
-        return self.current_value
-        
-    def _open_popup(self):
-        if not self.values or self.values == ["(Carregando...)"] or self.values == ["(Nenhum pregão carregado)"] or self.values == ["(Nenhum pregão)"]:
-            return
-        popup = SearchableSelectPopup(self.winfo_toplevel(), self.values, self._on_select)
-        
-    def _on_select(self, value):
-        self.set(value)
-        if self.command:
-            self.command(value)
 
 
 # ─── PAINEL 1: DASHBOARD ──────────────────────────────────────────────────────
@@ -564,12 +462,16 @@ class PainelDashboard(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
         self._build()
+        self.after(300, self._iniciar_threads_background)
+        
+    def _iniciar_threads_background(self) -> None:
         self.carregar_dados_dashboard()
         self.verificar_status_chrome()
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
 
         chrome_frame = ctk.CTkFrame(self, fg_color="transparent")
         chrome_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 10))
@@ -587,6 +489,13 @@ class PainelDashboard(ctk.CTkFrame):
             command=self._sincronizar_drive
         )
         self.btn_sync_drive.pack(side="right", padx=10)
+
+        self.btn_radar_diario = ctk.CTkButton(
+            chrome_frame, text="🔄 Executar Radar do Dia", font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=8,
+            command=self._executar_radar_diario
+        )
+        self.btn_radar_diario.pack(side="right", padx=10)
 
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
         cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
@@ -614,13 +523,15 @@ class PainelDashboard(ctk.CTkFrame):
 
         card_lics = CardFrame(main_content)
         card_lics.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        card_lics.grid_rowconfigure(1, weight=1)
+        card_lics.grid_rowconfigure(2, weight=1)
         card_lics.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(card_lics, text="📅 Oportunidades do Dia", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
 
         self._criar_barra_filtros(card_lics)
 
         tbl_frame = ctk.CTkFrame(card_lics, fg_color="transparent")
-        tbl_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 12))
+        tbl_frame.grid(row=2, column=0, sticky="nsew", padx=12, pady=(0, 12))
         tbl_frame.grid_columnconfigure(0, weight=1)
         tbl_frame.grid_rowconfigure(0, weight=1)
 
@@ -640,9 +551,55 @@ class PainelDashboard(ctk.CTkFrame):
         ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_purple"], text_color="#FFFFFF", height=38, command=self._buscar_no_pncp_bg).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
         ctk.CTkButton(card_dicas, text="🚀  Console de Lances ao Vivo", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_green"], text_color="#000000", height=38, command=lambda: self.app.selecionar_aba("⚡  Console da Sessão")).grid(row=3, column=0, sticky="ew", padx=16, pady=4)
 
+        card_multi = CardFrame(self)
+        card_multi.grid(row=3, column=0, sticky="nsew", padx=0, pady=(12, 0))
+        card_multi.grid_columnconfigure(0, weight=1)
+        card_multi.grid_rowconfigure(1, weight=1)
+        
+        top_multi = ctk.CTkFrame(card_multi, fg_color="transparent")
+        top_multi.grid(row=0, column=0, sticky="ew", padx=16, pady=10)
+        top_multi.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(top_multi, text="⚔️ Painel de Multi-Disputas", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w")
+        self.btn_iniciar_multi = ctk.CTkButton(top_multi, text="🚀 Iniciar Monitoramento de Todas as Disputas", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_green"], text_color="#000000", command=self._toggle_multi_disputas)
+        self.btn_iniciar_multi.grid(row=0, column=2, sticky="e")
+        
+        self.tree_multi = ttk.Treeview(card_multi, columns=("orgao", "pregao", "status", "lider", "acao"), show="headings", height=5)
+        self.tree_multi.heading("orgao", text="UASG / Órgão")
+        self.tree_multi.heading("pregao", text="Nº Pregão")
+        self.tree_multi.heading("status", text="Status")
+        self.tree_multi.heading("lider", text="Líder R$")
+        self.tree_multi.heading("acao", text="Ação")
+        self.tree_multi.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+
+    def _toggle_multi_disputas(self):
+        import asyncio
+        from gerenciador_multi_disputas import obter_motor_multi
+        motor = obter_motor_multi()
+        if motor._rodando:
+            asyncio.run(motor.parar_loop())
+            self.btn_iniciar_multi.configure(text="🚀 Iniciar Monitoramento de Todas as Disputas", fg_color=COR["accent_green"])
+        else:
+            asyncio.run(motor.iniciar_loop())
+            self.btn_iniciar_multi.configure(text="🛑 Parar Monitoramento", fg_color="#EF4444")
+
+    def _executar_radar_diario(self) -> None:
+        self.btn_radar_diario.configure(text="⏳ Rodando Radar...", state="disabled")
+        def worker():
+            try:
+                import subprocess
+                subprocess.run(["python", "coletor_diario.py"], check=True)
+                self.after(0, self.carregar_dados_dashboard)
+                self.after(0, lambda: messagebox.showinfo("Radar", "Varredura concluída com sucesso!"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Erro", f"Erro no radar: {e}"))
+            finally:
+                self.after(0, lambda: self.btn_radar_diario.configure(text="🔄 Executar Radar do Dia", state="normal"))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
     def _criar_barra_filtros(self, parent_frame: Any) -> None:
         frame_filtros = ctk.CTkFrame(parent_frame, fg_color="#111827")
-        frame_filtros.grid(row=0, column=0, sticky="ew", padx=12, pady=(0, 10))
+        frame_filtros.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         ctk.CTkLabel(frame_filtros, text="Modalidade:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(10, 4), pady=6)
         self.combo_modalidade = ctk.CTkComboBox(
@@ -726,6 +683,8 @@ class PainelDashboard(ctk.CTkFrame):
     def aplicar_filtros(self) -> None:
         if not hasattr(self, "todas_licitacoes"):
             return
+        if not hasattr(self, "combo_modalidade") or self.combo_modalidade is None:
+            return
             
         mod_selecionada = self.combo_modalidade.get()
         uf_selecionada = self.combo_uf.get()
@@ -742,10 +701,11 @@ class PainelDashboard(ctk.CTkFrame):
         row_idx = 0
 
         for lic in self.todas_licitacoes:
-            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""  # type: ignore
-            uf = (lic.get("uf") or "").upper().strip()  # type: ignore
-            status = (lic.get("status_analise") or "PENDENTE").upper().strip()  # type: ignore
-            objeto = (lic.get("objeto") or "Sem descrição")  # type: ignore
+            if not isinstance(lic, dict): continue
+            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
+            uf = (lic.get("uf") or "").upper().strip()
+            status = (lic.get("status_analise") or "PENDENTE").upper().strip()
+            objeto = (lic.get("objeto") or "Sem descrição")
 
             if mod_selecionada != "Todas" and mod_selecionada.lower() not in modalidade_nome.lower():
                 continue
@@ -772,6 +732,15 @@ class PainelDashboard(ctk.CTkFrame):
             # CUIDADO COM PALAVRAS DE TI
             ti_kws = ["tecnologia", "informática", "software", "computador", "rede", "suporte", "cabeamento", "notebook", "nobreak"]
             is_ti = any(kw in objeto.lower() for kw in ti_kws)
+
+            total_hoje += 1
+            if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
+                participando += 1
+
+            if row_idx >= 30:
+                continue
+
+            row_idx += 1
 
             # --- Criação do Card ---
             card = ctk.CTkFrame(self.scroll_lics, fg_color=COR["bg_card"], corner_radius=10, border_width=1, border_color=COR["border"])
@@ -805,7 +774,7 @@ class PainelDashboard(ctk.CTkFrame):
                     pass
 
             # Linhas de Texto
-            orgao = f"[{uf}] {lic.get('orgao_nome', '')[:45]}"  # type: ignore
+            orgao = f"Portal: {lic.get('portal', 'COMPRAS_GOV')} | [{uf}] {lic.get('orgao_nome', '')[:45]}"
             ctk.CTkLabel(card, text=orgao, font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=16)
             ctk.CTkLabel(card, text=objeto[:100] + ("..." if len(objeto) > 100 else ""), font=ctk.CTkFont(size=12), text_color=COR["text_secondary"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 12))
 
@@ -813,19 +782,35 @@ class PainelDashboard(ctk.CTkFrame):
             val_str = f"R$ {valor:,.2f}"
             ctk.CTkLabel(card, text=val_str, font=ctk.CTkFont(size=18, weight="bold"), text_color=COR["accent_green"]).grid(row=1, column=2, sticky="e", padx=16, rowspan=2)
 
-            link = lic.get("link_edital", "")  # type: ignore
-            btn = ctk.CTkButton(card, text="Acessar Processo", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=20, width=120)
-            if link:
-                import webbrowser
-                btn.configure(command=lambda l=link: webbrowser.open(l))
+            btn = ctk.CTkButton(card, text="⚡ Selecionar & Precificar", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=20, width=150)
+            btn.configure(command=lambda l=lic: self._selecionar_e_precificar(l))
             btn.grid(row=2, column=2, sticky="e", padx=16, pady=(0, 12))
-            
-            total_hoje += 1
-            if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
-                participando += 1
                 
         self.card_radar_pncp.atualizar(str(total_hoje))
         self.card_servicos_ti.atualizar(str(participando))
+
+    def _selecionar_e_precificar(self, lic):
+        link = lic.get("link_sistema", "")
+        # Trocar aba e usar Entrada Rápida do Painel Editais
+        self.app.selecionar_aba("📄  Editais & Custos")
+        # Encontra a instância do PainelEditais
+        for tab in self.app.tabview.winfo_children():
+            # A view frame is nested inside the tabview, wait let's just use self.app.painel_editais directly if possible.
+            # But the tabview children aren't directly the classes.
+            # We can find the painel_editais easily by looking for txt_entrada_rapida.
+            for child in tab.winfo_children():
+                if hasattr(child, "txt_entrada_rapida"):
+                    # Injeta o link lá e chama carregar direto
+                    child.txt_entrada_rapida.delete(0, "end")
+                    child.txt_entrada_rapida.insert(0, link)
+                    child._carregar_direto()
+                    return
+        
+        # Fallback if we have app.painel_editais (which we do in main but in app_gui maybe not)
+        if hasattr(self.app, "painel_editais"):
+            self.app.painel_editais.txt_entrada_rapida.delete(0, "end")
+            self.app.painel_editais.txt_entrada_rapida.insert(0, link)
+            self.app.painel_editais._carregar_direto()
 
     def _on_tree_lics_double_click(self, event: Any) -> None:
         item = self.tree_lics.selection()
@@ -971,19 +956,46 @@ class PainelEditais(ctk.CTkFrame):
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
+        self.grid_rowconfigure(3, weight=1)
+
+        import tkinter as tk
+
+        # 0. Entrada Rápida
+        card_entrada = CardFrame(self)
+        card_entrada.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_entrada.grid_columnconfigure(0, weight=1)
+        
+        f_entrada = ctk.CTkFrame(card_entrada, fg_color="transparent")
+        f_entrada.pack(fill="x", padx=16, pady=10)
+        f_entrada.grid_columnconfigure(0, weight=1)
+        
+        self.txt_entrada_rapida = ctk.CTkEntry(f_entrada, placeholder_text="Cole o Link do PNCP, Processo ou UASG/Pregão...")
+        self.txt_entrada_rapida.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        self.txt_entrada_rapida.bind("<Return>", lambda e: self._carregar_direto())
+        self.txt_entrada_rapida.bind("<Control-v>", lambda e: self.after(10, lambda: None))
+        
+        self.btn_carregar_direto = ctk.CTkButton(f_entrada, text="⚡ Carregar Direto", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_cyan"], text_color="#080C14", command=self._carregar_direto)
+        self.btn_carregar_direto.grid(row=0, column=1)
 
         # 1. Seletor de Certame na Nuvem
         card_seletor = CardFrame(self)
-        card_seletor.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_seletor.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
         card_seletor.grid_columnconfigure(1, weight=1)
 
-        import tkinter as tk
         ctk.CTkLabel(card_seletor, text="☁️  Selecione a Licitação na Nuvem:", font=ctk.CTkFont(size=13, weight="bold"), text_color=COR["accent_cyan"]).grid(row=0, column=0, padx=(16, 8), pady=10, sticky="w")
         
-        self.cmb_certames = SearchableDropdown(
+        import cache_manager
+        cache = cache_manager.carregar_cache()
+        valores_iniciais = ["(Carregando...)"]
+        if "todas_licitacoes" in cache:
+            self.dados_nuvem = cache["todas_licitacoes"]
+            valores_iniciais = [f"[{l.get('uf', '')}] {l.get('orgao_nome', '')[:20]} - {l.get('numero_pregao', '')}" for l in self.dados_nuvem]
+            if not valores_iniciais:
+                valores_iniciais = ["(Nenhum pregão carregado)"]
+                
+        self.cmb_certames = ctk.CTkComboBox(
             card_seletor,
-            values=["(Carregando...)"],
+            values=valores_iniciais,
             command=self._on_certame_selecionado,
             width=300
         )
@@ -991,10 +1003,14 @@ class PainelEditais(ctk.CTkFrame):
 
         btn_remover = ctk.CTkButton(card_seletor, text="🔄 Atualizar Nuvem", width=120, fg_color=COR["accent_purple"], text_color="#FFFFFF", command=self.atualizar_lista_certames)
         btn_remover.grid(row=0, column=2, padx=(4, 16), pady=10)
+        
+        if "todas_licitacoes" in cache and valores_iniciais and valores_iniciais[0] not in ("(Nenhum pregão carregado)", "(Carregando...)"):
+            self.cmb_certames.set(valores_iniciais[0])
+            self.after(50, lambda: self._on_certame_selecionado(valores_iniciais[0]))
 
         # 2. Barra de Regras de Lances
         card_regras = CardFrame(self)
-        card_regras.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_regras.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
         
         ctk.CTkLabel(card_regras, text="⚖️ Regra de Lance:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(16, 8), pady=10)
         
@@ -1011,10 +1027,31 @@ class PainelEditais(ctk.CTkFrame):
 
         btn_salvar_regra = ctk.CTkButton(card_regras, text="💾 Salvar Regra no Supabase", fg_color=COR["accent_green"], text_color="#000000", command=self._salvar_regras_supabase)
         btn_salvar_regra.pack(side="right", padx=(8, 16), pady=10)
+        
+        btn_ir_disputa = ctk.CTkButton(
+            card_regras,
+            text="🚀 Ir para Disputa ao Vivo",
+            fg_color=COR["accent_cyan"],
+            text_color="#000000",
+            font=ctk.CTkFont(weight="bold"),
+            corner_radius=8,
+            command=self._ir_para_disputa
+        )
+        btn_ir_disputa.pack(side="right", padx=8, pady=10)
+
+        btn_preencher_proposta = ctk.CTkButton(
+            card_regras,
+            text="📝 Preencher Proposta no Comprasnet",
+            fg_color=COR["accent_green"],
+            text_color="#000000",
+            corner_radius=8,
+            command=self._preencher_proposta_ui
+        )
+        btn_preencher_proposta.pack(side="right", padx=8, pady=10)
 
         # 3. Tabela de Itens & Stop Loss
         card_itens = CardFrame(self)
-        card_itens.grid(row=2, column=0, sticky="nsew", padx=0, pady=0)
+        card_itens.grid(row=3, column=0, sticky="nsew", padx=0, pady=0)
         card_itens.grid_rowconfigure(1, weight=1)
         card_itens.grid_columnconfigure(0, weight=1)
 
@@ -1153,6 +1190,7 @@ class PainelEditais(ctk.CTkFrame):
             self._exibir_itens(lic)
             return
 
+        itens_para_sessao = []
         for item in resultado.itens:
             valor = item.valor_referencia or 0.0
             custo_real = item.custo_real or valor * 0.5
@@ -1180,6 +1218,13 @@ class PainelEditais(ctk.CTkFrame):
                 ),
                 tags=("evenrow",)
             )
+            itens_para_sessao.append({
+                "numero_item": item.numero_item,
+                "descricao": item.descricao
+            })
+            
+        if hasattr(self.app, "definir_licitacao_ativa"):
+            self.app.definir_licitacao_ativa(lic, itens_para_sessao)
 
     def _exibir_itens(self, lic: dict) -> None:
         for row in self.tree_itens.get_children():
@@ -1211,6 +1256,9 @@ class PainelEditais(ctk.CTkFrame):
             ),
             tags=("evenrow",)
         )
+        
+        if hasattr(self.app, "definir_licitacao_ativa"):
+            self.app.definir_licitacao_ativa(lic, [{"numero_item": 1, "descricao": lic.get("objeto", "")[:50]}])
         
         # Load rules if exist
         regra = lic.get("regra_lance")  # type: ignore
@@ -1265,19 +1313,235 @@ class PainelEditais(ctk.CTkFrame):
                 novo_custo_f = float(novo_custo.replace(",", "."))
                 novo_piso = novo_custo_f * 1.30  # 30% margin default
                 
-                from supabase import create_client
-                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-                key = os.getenv("SUPABASE_KEY") or ""
-                sb = create_client(url, key)
-                sb.table("licitacoes").update({"custo_real": novo_custo_f, "piso_seguro": novo_piso}).eq("id", lic_id).execute()
+                # Cálculo instantâneo e atualização da tela
+                try:
+                    val_ref_str = vals[4]
+                    val_ref = float(val_ref_str.replace("R$ ", "").replace(".", "").replace(",", "."))
+                except:
+                    val_ref = 0.0
+                margem = ((val_ref - novo_piso) / val_ref * 100) if val_ref > 0 else 0.0
                 
-                # Refresh table
-                self.atualizar_lista_certames()
-                import tkinter.messagebox as messagebox
-                messagebox.showinfo("Atualizado", "Custo e Stop-Loss recalcuados e salvos!")
+                novo_custo_str = f"R$ {novo_custo_f:,.2f}"
+                novo_piso_str = f"R$ {novo_piso:,.2f}"
+                nova_margem_str = f"{margem:.1f}%"
+                
+                new_vals = list(vals)
+                new_vals[5] = novo_custo_str
+                new_vals[6] = nova_margem_str
+                new_vals[7] = novo_piso_str
+                self.tree_itens.item(lic_id, values=new_vals)
+                
+                # Atualiza memória
+                if hasattr(self, "licitacao_ativa") and isinstance(self.licitacao_ativa, dict):
+                    self.licitacao_ativa["custo_real"] = novo_custo_f
+                    self.licitacao_ativa["piso_seguro"] = novo_piso
+                
+                real_id = lic_id.split("_")[0] if isinstance(lic_id, str) else str(lic_id).split("_")[0]
+                
+                # Despacha para o Supabase em background sem bloquear
+                def worker():
+                    try:
+                        from supabase import create_client
+                        url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                        key = os.getenv("SUPABASE_KEY") or ""
+                        sb = create_client(url, key)
+                        sb.table("licitacoes").update({"custo_real": novo_custo_f, "piso_seguro": novo_piso}).eq("id", real_id).execute()
+                    except Exception as e:
+                        import logging
+                        logging.error(f"Falha ao salvar custo em background: {e}")
+                
+                import threading
+                threading.Thread(target=worker, daemon=True).start()
+                
             except Exception as e:
                 import tkinter.messagebox as messagebox
                 messagebox.showerror("Erro", f"Falha:\\n{e}")
+
+    def _carregar_direto(self) -> None:
+        link = self.txt_entrada_rapida.get().strip()
+        if not link: return
+        
+        # 1. Fechar / Corrigir a Modal "Selecionar Opção" travada
+        try:
+            for widget in self.winfo_toplevel().winfo_children():
+                if isinstance(widget, ctk.CTkToplevel) and widget.title() == "Selecionar Opção":
+                    widget.destroy()
+        except Exception:
+            pass
+
+        # 2. Feedback Visual Inicial
+        if hasattr(self, 'btn_carregar_direto'):
+            self.btn_carregar_direto.configure(text="⏳ Carregando...", state="disabled")
+
+        def restore_btn():
+            if hasattr(self, 'btn_carregar_direto'):
+                self.btn_carregar_direto.configure(text="⚡ Carregar Direto", state="normal")
+
+        def worker():
+            try:
+                # 3. Formato Comprasnet
+                m_compra = re.search(r"compra=(\d{17})", link)
+                if not m_compra:
+                    m_compra = re.search(r"\b(\d{17})\b", link)
+
+                if m_compra:
+                    cod = m_compra.group(1)
+                    uasg = cod[0:6]
+                    mod = cod[6:8]
+                    pregao = int(cod[8:13])
+                    ano = cod[13:17]
+                    
+                    sigla = f"[UASG {uasg}] Pregão {pregao}/{ano}"
+                    url_disputa = f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra={cod}"
+                    
+                    self.after(0, lambda: self.cmb_certames.set(sigla))
+                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                    self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", f"Buscando itens Comprasnet: {sigla}...", "", "", "", "", "", "")))
+                    
+                    import os
+                    from supabase import create_client
+                    url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                    key = os.getenv("SUPABASE_KEY") or ""
+                    sb = create_client(url, key)
+                    
+                    res = sb.table("licitacoes").select("*").ilike("numero_pregao", f"%{pregao}/{ano}%").eq("numero_uasg", uasg).execute()
+                    if res.data:
+                        lic = res.data[0]
+                        if isinstance(lic, dict):
+                            lic["link_sistema"] = url_disputa
+                            self.after(0, lambda l=lic: self._exibir_itens(l))
+                            
+                            # Sincronizar com o Console
+                            def sync_console():
+                                if hasattr(self.app, 'painel_sessao') and hasattr(self.app.painel_sessao, 'txt_url'):
+                                    self.app.painel_sessao.txt_url.delete(0, 'end')
+                                    self.app.painel_sessao.txt_url.insert(0, url_disputa)
+                                self._ir_para_disputa()
+                                messagebox.showinfo("Sucesso", f"✅ Certame carregado com sucesso!\n{sigla}")
+                                
+                            self.after(500, sync_console)
+                    else:
+                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                        self.after(0, lambda: messagebox.showerror("Erro", f"Licitação {sigla} não encontrada no banco. Verifique se ela foi coletada primeiro."))
+                        
+                # 4. Formato PNCP
+                elif "pncp.gov.br" in link:
+                    m_pncp = re.search(r"pncp\.gov\.br/app/editais/(\d+)/(\d{4})/(\d+)", link)
+                    if not m_pncp:
+                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                        self.after(0, lambda: messagebox.showerror("Erro", "URL PNCP não possui CNPJ, Ano e Sequência válidos."))
+                        return
+                        
+                    cnpj, ano, seq = m_pncp.groups()
+                    
+                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                    self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando itens no PNCP...", "", "", "", "", "", "")))
+                    
+                    from pncp_client import carregar_certame_pncp
+                    resultado = carregar_certame_pncp(link)
+                    
+                    if resultado:
+                        fake_lic = {"id": "direct_import", "numero_pregao": link, "link_sistema": link}
+                        self.after(0, lambda: self._exibir_itens_pncp(fake_lic, resultado))
+                        
+                        def sync_console_pncp():
+                            if hasattr(self.app, 'painel_sessao') and hasattr(self.app.painel_sessao, 'txt_url'):
+                                self.app.painel_sessao.txt_url.delete(0, 'end')
+                                self.app.painel_sessao.txt_url.insert(0, link)
+                            self._ir_para_disputa()
+                            messagebox.showinfo("Sucesso", "✅ Certame carregado com sucesso!")
+                            
+                        self.after(500, sync_console_pncp)
+                    else:
+                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                        self.after(0, lambda: messagebox.showerror("Erro", "Erro ao extrair itens do PNCP ou portal indisponível."))
+                else:
+                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                    self.after(0, lambda: messagebox.showerror("Erro", "Formato de link não reconhecido.\nUse um link de disputa Comprasnet (com ?compra=...) ou PNCP."))
+                    
+            except Exception as e:
+                import traceback
+                err_msg = traceback.format_exc()
+                import logging
+                logging.error(f"Erro carregar direto: {err_msg}")
+                self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                self.after(0, lambda: messagebox.showerror("Erro", f"Ocorreu um erro ao processar o link:\n{e}"))
+            finally:
+                self.after(0, restore_btn)
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ir_para_disputa(self) -> None:
+        if hasattr(self, "licitacao_ativa") and self.licitacao_ativa:
+            itens_ativos = []
+            for item in self.tree_itens.get_children():
+                vals = self.tree_itens.item(item, "values")
+                if vals and len(vals) >= 8:
+                    try:
+                        piso_f = float(vals[7].replace("R$", "").replace(".", "").replace(",", ".").strip())
+                    except:
+                        piso_f = 0.0
+                    itens_ativos.append({
+                        "numero_item": vals[0],
+                        "descricao": vals[1],
+                        "piso_seguro": piso_f
+                    })
+            if hasattr(self.app, "definir_licitacao_ativa"):
+                self.app.definir_licitacao_ativa(self.licitacao_ativa, itens_ativos)  # type: ignore
+            
+            if hasattr(self.app, "selecionar_aba"):
+                self.app.selecionar_aba("⚡  Console da Sessão")
+
+    def _preencher_proposta_ui(self) -> None:
+        if not hasattr(self, "licitacao_ativa") or not self.licitacao_ativa:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Atenção", "Selecione uma licitação na lista primeiro.")
+            return
+            
+        uasg = str(self.licitacao_ativa.get("numero_uasg", "")) if isinstance(self.licitacao_ativa, dict) else ""
+        pregao = str(self.licitacao_ativa.get("numero_pregao", "")) if isinstance(self.licitacao_ativa, dict) else ""
+        
+        if not uasg or not pregao:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Atenção", "A licitação selecionada não possui UASG ou Número do Pregão definidos.")
+            return
+            
+        itens_proposta = []
+        for item in self.tree_itens.get_children():
+            vals = self.tree_itens.item(item, "values")
+            if vals and len(vals) >= 8:
+                try:
+                    # Tenta pegar o custo ou o piso (usando a coluna 5: Custo, ou 7: Piso/Stop-loss)
+                    valor_str = vals[5].replace("R$", "").strip() 
+                except Exception:
+                    valor_str = ""
+                    
+                itens_proposta.append({
+                    "item_num": vals[0],
+                    "descricao": vals[1],
+                    "valor": valor_str,
+                    "marca": "A Definir",
+                    "fabricante": "A Definir",
+                    "modelo": "Padrão"
+                })
+        
+        if not itens_proposta:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Atenção", "Nenhum item carregado na tabela para preencher a proposta.")
+            return
+            
+        import threading
+        def _run_bg():
+            try:
+                from browser_bot import BrowserBot
+                from engine import MotorDecisao
+                bot = BrowserBot(motor=MotorDecisao(dry_run=False))
+                bot.cadastrar_proposta_comprasnet(uasg, pregao, itens_proposta)
+            except Exception as e:
+                print(f"Erro na thread de cadastro de proposta: {e}")
+                
+        threading.Thread(target=_run_bg, daemon=True).start()
 
 # ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
 class TkinterLogHandler(logging.Handler):
@@ -1315,6 +1579,59 @@ class PainelSessao(ctk.CTkFrame):
         logger_engine = logging.getLogger("engine")
         logger_engine.addHandler(handler)
 
+    def sincronizar_com_licitacao_ativa(self) -> None:
+        if not hasattr(self.app, 'licitacao_ativa') or not self.app.licitacao_ativa:
+            return
+            
+        lic = self.app.licitacao_ativa
+        num_pregao = lic.get("numero_pregao", "")
+        if num_pregao:
+            vals = self.cmb_disputa._values if hasattr(self.cmb_disputa, '_values') else []
+            texto = f"[{lic.get('uf','')}] {lic.get('orgao_nome','')[:20]} - {num_pregao}"
+            
+            # Atualiza Dropdown
+            novos_vals = list(vals) if vals else []
+            if "(Nenhum pregão carregado)" in novos_vals:
+                novos_vals.remove("(Nenhum pregão carregado)")
+            if "(Nenhum pregão)" in novos_vals:
+                novos_vals.remove("(Nenhum pregão)")
+                
+            if texto not in novos_vals and num_pregao not in novos_vals:
+                novos_vals.append(texto)
+                
+            self.cmb_disputa.configure(values=novos_vals)
+            
+            try:
+                if texto in novos_vals:
+                    self.cmb_disputa.set(texto)
+                else:
+                    self.cmb_disputa.set(num_pregao)
+            except:
+                pass
+                
+            # Atualiza URL Sala de Disputa
+            url = lic.get("link_sistema", "") or lic.get("url_edital", "") or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
+            if hasattr(self, 'txt_url'):
+                self.txt_url.delete(0, "end")
+                self.txt_url.insert(0, url)
+            
+            for item in self.tree_sessao.get_children():
+                self.tree_sessao.delete(item)
+                
+            self._item_rows.clear()
+            if hasattr(self.app, 'itens_ativos'):
+                for it in self.app.itens_ativos:
+                    num = str(it.get("numero_item", it.get("num", "1")))
+                    desc = str(it.get("descricao", ""))[:50]
+                    piso = float(it.get("piso_seguro", 0.0))
+                    piso_str = f"R$ {piso:,.2f}" if piso > 0 else "-"
+                    
+                    iid = self.tree_sessao.insert("", "end", values=(num, desc, "-", piso_str, "-", "AGUARDANDO"))
+                    try:
+                        self._item_rows[int(num)] = iid
+                    except:
+                        pass
+
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -1343,7 +1660,7 @@ class PainelSessao(ctk.CTkFrame):
             text_color=COR["accent_cyan"],
         ).grid(row=0, column=1, padx=(16, 4), sticky="e")
 
-        self.cmb_disputa = SearchableDropdown(
+        self.cmb_disputa = ctk.CTkComboBox(
             ctrl_top,
             values=["(Nenhum pregão)"],
             width=260,
@@ -1579,7 +1896,25 @@ class PainelSessao(ctk.CTkFrame):
             self.sw_modo.configure(text="⚠️ MODO REAL (Envio de Lances)", progress_color=COR["accent_red"])
 
     def _on_disputa_mudou(self, escolha: str) -> None:
-        self.atualizar_tabela_inicial()
+        # Se mudou no console, pede para o Painel Editais buscar os dados,
+        # o que por consequência chamará sincronizar_com_licitacao_ativa() preenchendo a tabela
+        if hasattr(self.app, 'painel_editais'):
+            if hasattr(self.app, 'licitacao_ativa'):
+                lic = self.app.licitacao_ativa
+                texto_atual = f"[{lic.get('uf','')}] {lic.get('orgao_nome','')[:20]} - {lic.get('numero_pregao','')}"
+                if escolha in (texto_atual, lic.get('numero_pregao','')):
+                    return # Já é a mesma
+                    
+            vals = self.app.painel_editais.cmb_certames._values if hasattr(self.app.painel_editais.cmb_certames, '_values') else []
+            alvo = escolha
+            if escolha not in vals:
+                for v in vals:
+                    if escolha in v or (len(escolha.split('-')) > 1 and escolha.split('-')[-1].strip() in v):
+                        alvo = v
+                        break
+            
+            self.app.painel_editais.cmb_certames.set(alvo)
+            self.app.painel_editais._on_certame_selecionado(alvo)
 
     def atualizar_seletor_disputa(self) -> None:
         import os
@@ -2071,6 +2406,7 @@ class PainelServicos(ctk.CTkFrame):
         ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", command=self.ver_escopo_tr).grid(row=0, column=0, padx=10)
         ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=self.calcular_sla).grid(row=0, column=1, padx=10)
         ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=self.gerar_excel).grid(row=0, column=2, padx=10)
+        ctk.CTkButton(btn_frame, text="🏷️ Precificar Prod+Serv", fg_color=COR.get("accent_green", "#10b981"), text_color="#000000", command=self.abrir_precificador_misto).grid(row=0, column=3, padx=10)
 
         self.dados_servicos = []
         # Wait slightly to load after initialization
@@ -2228,6 +2564,162 @@ class PainelServicos(ctk.CTkFrame):
         except Exception as e:
             import tkinter.messagebox as messagebox
             messagebox.showerror("Erro", f"Falha ao gerar Excel:\n{e}")
+
+    def abrir_precificador_misto(self):
+        srv = self._get_selected_srv()
+        if not srv: return
+        
+        objeto = srv.get("objeto", "")
+        valor_orgao = float(srv.get("valor_estimado") or 0.0)
+        
+        top = ctk.CTkToplevel(self)
+        top.title("Precificação Mista (Produto + Serviço)")
+        top.geometry("600x600")
+        
+        ctk.CTkLabel(top, text="🔍 Termo de Busca (Mercado Livre):").pack(pady=(10,0))
+        entry_termo = ctk.CTkEntry(top, width=400)
+        entry_termo.pack()
+        termo_sugerido = " ".join(objeto.split()[:4]) if objeto else "Notebook"
+        entry_termo.insert(0, termo_sugerido)
+        
+        frame_resultado = ctk.CTkFrame(top)
+        frame_resultado.pack(fill="both", expand=True, padx=20, pady=10)
+        
+        lbl_prod = ctk.CTkLabel(frame_resultado, text="Nenhum produto buscado ainda.")
+        lbl_prod.pack(pady=5)
+        lbl_preco = ctk.CTkLabel(frame_resultado, text="Preço ML: R$ 0,00", font=ctk.CTkFont(weight="bold"))
+        lbl_preco.pack(pady=5)
+        
+        import tkinter as tk
+        preco_produto_var = tk.DoubleVar(value=0.0)
+        produto_selecionado = {} # Guarda o dicionário do produto pesquisado
+        
+        def buscar():
+            lbl_prod.configure(text="Buscando...")
+            top.update()
+            import threading
+            def bg_search():
+                from precificador_misto import PrecificadorMisto
+                prec = PrecificadorMisto()
+                res = prec.buscar_produto_meli(entry_termo.get())
+                def atualiza_ui():
+                    if res:
+                        produto_selecionado.update(res)
+                        full_tag = "⚡ FULL" if res.get("entrega_full") else ""
+                        lbl_prod.configure(text=f"{res['titulo'][:60]}... {full_tag}")
+                        val = res['preco']
+                        lbl_preco.configure(text=f"Preço ML: R$ {val:,.2f}")
+                        preco_produto_var.set(val)
+                        calcular_proposta()
+                    else:
+                        produto_selecionado.clear()
+                        lbl_prod.configure(text="Produto não encontrado.")
+                        lbl_preco.configure(text="Preço ML: R$ 0,00")
+                        preco_produto_var.set(0.0)
+                self.after(0, atualiza_ui)
+            threading.Thread(target=bg_search, daemon=True).start()
+            
+        ctk.CTkButton(top, text="Buscar no ML (Full)", command=buscar).pack(pady=5)
+        
+        frame_fin = ctk.CTkFrame(top)
+        frame_fin.pack(fill="x", padx=20, pady=5)
+        
+        ctk.CTkLabel(frame_fin, text="Qtd:").grid(row=0, column=0, padx=5, pady=5)
+        entry_qtd = ctk.CTkEntry(frame_fin, width=60)
+        entry_qtd.grid(row=0, column=1, padx=5)
+        entry_qtd.insert(0, "1")
+        
+        ctk.CTkLabel(frame_fin, text="Margem Produto (%):").grid(row=0, column=2, padx=5, pady=5)
+        entry_margem = ctk.CTkEntry(frame_fin, width=60)
+        entry_margem.grid(row=0, column=3, padx=5)
+        entry_margem.insert(0, "25")
+        
+        ctk.CTkLabel(frame_fin, text="Mão de Obra (Serviço) R$:").grid(row=1, column=0, padx=5, pady=5, columnspan=2)
+        entry_servico = ctk.CTkEntry(frame_fin, width=100)
+        entry_servico.grid(row=1, column=2, padx=5, columnspan=2, sticky="w")
+        entry_servico.insert(0, "500.00")
+        
+        lbl_res_orgao = ctk.CTkLabel(top, text=f"Valor Estimado (Órgão): R$ {valor_orgao:,.2f}", text_color="gray")
+        lbl_res_orgao.pack(pady=5)
+        
+        lbl_res_prop = ctk.CTkLabel(top, text="Proposta: R$ 0,00", font=ctk.CTkFont(weight="bold", size=16))
+        lbl_res_prop.pack(pady=2)
+        
+        lbl_res_lucro = ctk.CTkLabel(top, text="Lucro Líquido: R$ 0,00", text_color="#10b981", font=ctk.CTkFont(weight="bold"))
+        lbl_res_lucro.pack(pady=2)
+        
+        lbl_desconto = ctk.CTkLabel(top, text="Desconto vs Órgão: 0%")
+        lbl_desconto.pack(pady=2)
+        
+        def calcular_proposta(*args):
+            try:
+                qtd = int(entry_qtd.get() or 0)
+                margem = float(entry_margem.get() or 0) / 100.0
+                val_servico = float(entry_servico.get() or 0)
+                preco_prod = preco_produto_var.get()
+                
+                from precificador_misto import PrecificadorMisto
+                calc = PrecificadorMisto().calcular_proposta(preco_prod, qtd, margem, val_servico)
+                
+                proposta = calc["valor_proposta"]
+                lucro = calc["lucro_liquido"]
+                
+                lbl_res_prop.configure(text=f"Sua Proposta Sugerida: R$ {proposta:,.2f}")
+                lbl_res_lucro.configure(text=f"Lucro Líquido Estimado: R$ {lucro:,.2f}")
+                
+                if valor_orgao > 0:
+                    desc = ((valor_orgao - proposta) / valor_orgao) * 100
+                    cor = "#10b981" if desc > 0 else "#ef4444"
+                    lbl_desconto.configure(text=f"Desconto vs Órgão: {desc:.1f}%", text_color=cor)
+            except Exception:
+                pass
+                
+        entry_qtd.bind("<KeyRelease>", calcular_proposta)
+        entry_margem.bind("<KeyRelease>", calcular_proposta)
+        entry_servico.bind("<KeyRelease>", calcular_proposta)
+        
+        def salvar_cotacao():
+            import tkinter.messagebox as messagebox
+            import threading
+            def worker():
+                try:
+                    import supabase_client
+                    sb = supabase_client.get_client()
+                    if sb:
+                        qtd = int(entry_qtd.get() or 0)
+                        margem = float(entry_margem.get() or 0) / 100.0
+                        val_servico = float(entry_servico.get() or 0)
+                        preco_prod = preco_produto_var.get()
+                        
+                        from precificador_misto import PrecificadorMisto
+                        calc = PrecificadorMisto().calcular_proposta(preco_prod, qtd, margem, val_servico)
+                        
+                        sb.table('licitacoes').update({
+                            "status_analise": "COTADA",
+                            "custo_real": calc.get("custo_real", 0.0),
+                            "margem_lucro": calc.get("margem_lucro", 0.0),
+                            "stop_loss": calc.get("stop_loss", 0.0)
+                        }).eq("numero_pregao", srv.get("numero_pregao")).execute()
+                        
+                        # Salvar produto em catalogo_distribuidores se existir
+                        if produto_selecionado:
+                            sb.table('catalogo_distribuidores').upsert({
+                                "distribuidor": "Mercado Livre",
+                                "sku": produto_selecionado.get("id"),
+                                "descricao": (produto_selecionado.get("titulo") or "")[:255],
+                                "categoria": "Equipamento TI",
+                                "preco_custo": produto_selecionado.get("preco", 0.0),
+                                "estoque_disponivel": 10, # default conservador
+                                "link_produto": produto_selecionado.get("link", "")
+                            }).execute()
+                            
+                        self.after(0, lambda: messagebox.showinfo("Sucesso", "Cotação e Produto salvos no Supabase!"))
+                        self.after(0, top.destroy)
+                except Exception as e:
+                    self.after(0, lambda: messagebox.showerror("Erro", f"Erro ao salvar: {e}"))
+            threading.Thread(target=worker, daemon=True).start()
+
+        ctk.CTkButton(top, text="💾 Salvar Cotação (Status COTADA)", fg_color=COR.get("accent_blue", "#3b82f6"), command=salvar_cotacao).pack(pady=20)
 
 class PainelProdutos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
@@ -2410,7 +2902,7 @@ class App(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     def on_closing(self) -> None:
-        self.destroy()
+        """Encerramento imediato para evitar deadlock no Tcl/Tk (GIL)."""
         import os
         os._exit(0)
 
@@ -2425,6 +2917,13 @@ class App(ctk.CTk):
         self.painel_sessao.atualizar_seletor_disputa()
 
         messagebox.showinfo("Licitação Adicionada", f"✅ '{nome_chave}' adicionada com sucesso!\nTotal de certames ativos hoje: {len(self.catalogo_licitacoes)}")
+
+    def definir_licitacao_ativa(self, licitacao_dados: dict, itens: list | None = None) -> None:
+        self.licitacao_ativa = licitacao_dados
+        self.itens_ativos = itens or []
+        # Sincroniza imediatamente o Console de Disputa
+        if hasattr(self, 'painel_sessao') and hasattr(self.painel_sessao, 'sincronizar_com_licitacao_ativa'):
+            self.painel_sessao.sincronizar_com_licitacao_ativa()
 
     def _build_ui(self) -> None:
         self.grid_rowconfigure(0, weight=1)
@@ -2514,14 +3013,9 @@ def run_gui() -> None:
         lock_file = os.path.join(os.path.expanduser("~"), ".robo_licitacoes.lock")
         _lock_fd = os.open(lock_file, os.O_CREAT | os.O_WRONLY)
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except Exception:
-        import tkinter.messagebox as messagebox
-        import tkinter as tk
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showwarning("Aviso", "O robô já está em execução!")
-        root.destroy()
+    except Exception as e:
         import sys
+        print(f"O robô já está em execução! (Lock retido). Encerrando. Erro: {e}")
         sys.exit(0)
 
     app = App()

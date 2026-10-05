@@ -1034,6 +1034,78 @@ class BrowserBot:
         except Exception:
             return ""
 
+    def cadastrar_proposta_comprasnet(self, uasg: str, numero_compra: str, itens_proposta: list[dict]) -> bool:
+        """
+        Cadastra propostas no portal de compras automaticamente via UI e mantém aberto.
+        """
+        self._log("INFO", f"Iniciando preenchimento de proposta. UASG: {uasg} | Compra: {numero_compra}")
+        
+        try:
+            with self._abrir_navegador() as page:
+                page.goto("https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras")
+                page.wait_for_load_state("networkidle")
+                
+                # Preencher a busca (ajustar seletores)
+                try:
+                    # Tenta os campos comuns de uasg e numero no comprasnet
+                    page.fill("input[name*='uasg'], input[placeholder*='UASG']", uasg, timeout=5000)
+                    page.fill("input[name*='numero'], input[placeholder*='Pregão'], input[placeholder*='Número']", numero_compra)
+                    page.click("button:has-text('Pesquisar'), button:has-text('Consultar')")
+                    page.wait_for_load_state("networkidle")
+                except PlaywrightTimeout:
+                    self._log("WARNING", "Campos de busca não encontrados. Assumindo que já está na tela ou layout mudou.")
+                
+                # Clica para Incluir Proposta / Cadastrar
+                try:
+                    page.click("button:has-text('Incluir Proposta'), a:has-text('Incluir Proposta'), button:has-text('Cadastrar Proposta')", timeout=5000)
+                    page.wait_for_load_state("networkidle")
+                except PlaywrightTimeout:
+                    self._log("WARNING", "Botão de 'Incluir Proposta' não encontrado.")
+
+                sucessos = 0
+                for prop in itens_proposta:
+                    item_num = prop.get("item_num")
+                    self._log("INFO", f"Preenchendo item {item_num}...")
+                    
+                    try:
+                        linha_item = page.locator(f"tr:has-text('Item {item_num}'), div.item-card:has-text('Item {item_num}')").first
+                        if linha_item.count() == 0:
+                            self._log("WARNING", f"Item {item_num} não encontrado.")
+                            continue
+                        
+                        if prop.get("valor"):
+                            linha_item.locator("input[name*='valor'], input[name*='valorUnitario']").fill(str(prop["valor"]))
+                        if prop.get("marca"):
+                            linha_item.locator("input[name*='marca']").fill(str(prop["marca"]))
+                        if prop.get("fabricante"):
+                            linha_item.locator("input[name*='fabricante']").fill(str(prop["fabricante"]))
+                        if prop.get("modelo"):
+                            linha_item.locator("input[name*='modelo']").fill(str(prop["modelo"]))
+                        if prop.get("descricao"):
+                            linha_item.locator("textarea[name*='descricao']").fill(str(prop["descricao"]))
+                        
+                        # Salvar o item individualmente, caso a interface exija
+                        btn_salvar_item = linha_item.locator("button:has-text('Salvar Item'), button[title*='Salvar']")
+                        if btn_salvar_item.count() > 0:
+                            btn_salvar_item.first.click()
+                            time.sleep(1) # Aguarda ajax de salvamento
+                        
+                        sucessos += 1
+                        time.sleep(0.5)
+                    except Exception as e:
+                        self._log("ERROR", f"Falha ao preencher item {item_num}: {e}")
+
+                self._log("INFO", f"Preenchimento concluído: {sucessos}/{len(itens_proposta)} itens. A tela permanecerá aberta para conferência visual!")
+                
+                # Deixa a tela aberta rodando um loop longo para o humano conferir
+                self._log("INFO", "Aguardando conferência do operador... (timeout 10 min)")
+                page.wait_for_timeout(600000) # 10 minutos
+                return True
+                
+        except Exception as e:
+            self._log("ERROR", f"Erro fatal ao preencher proposta: {e}")
+            
+        return False
 
 def testar_pre_voo_comprasgov(timeout_ms: int = 10000) -> tuple[bool, str]:
     """

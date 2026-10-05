@@ -10,10 +10,7 @@ import json
 import logging
 from dotenv import load_dotenv
 
-load_dotenv()
 logger = logging.getLogger("CopilotoGemini")
-
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
 PROMPT_SISTEMA = """
 Você é o Copiloto Tático de Licitações da empresa JRBC TECH (CNPJ: 65.488.003/0001-61), sediada em Palmas/TO.
@@ -31,10 +28,12 @@ def consultar_copiloto(estado_pregao: dict, mensagem_operador: str = "") -> str:
     """
     Envia o snapshot atual da disputa e a dúvida do operador para o Gemini.
     """
-    if not GEMINI_API_KEY:
+    load_dotenv(override=True)
+    chave = os.getenv("GEMINI_API_KEY")
+    if not chave:
         return "⚠️ Chave GEMINI_API_KEY não configurada no .env."
 
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={chave}"
     headers = {"Content-Type": "application/json"}
 
     contexto = f"""
