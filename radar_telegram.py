@@ -222,19 +222,8 @@ def varrer_pncp(uf: str = "TO", dias_atras: int = 1, persistir_supabase: bool = 
         f"Foram identificados *{len(encontrados)} edital(is)* de TI/Tecnologia em *{uf}*."
     )
 
-    # 2. Envia cada card individual com link clicável (limita a 10 para evitar flood)
-    for op in encontrados[:10]:
-        val_str = f"R$ {op['valor']:,.2f}" if op['valor'] else "Não informado"
-        card = (
-            f"🏛 *{op['orgao']}* ({op['municipio']}/{uf})\n"
-            f"📋 *Modalidade:* {op['modalidade']}\n"
-            f"💵 *Valor Estimado:* {val_str}\n"
-            f"📝 *Objeto:* _{op['objeto'][:180]}..._\n\n"
-            f"🔗 [Acessar Edital / Portal]({op['link']})"
-        )
-        TelegramService.enviar_mensagem(card)
-
-    # 3. Opcional: Persistir no Supabase com portal='COMPRAS_GOV'
+    # 2. Persistir no Supabase com portal='COMPRAS_GOV' para obter IDs e sincronizar
+    mapa_ids: dict[str, str] = {}
     if persistir_supabase:
         try:
             from supabase_client import get_supabase_client
@@ -253,16 +242,45 @@ def varrer_pncp(uf: str = "TO", dias_atras: int = 1, persistir_supabase: bool = 
                         "link_edital": op["link"],
                         "portal": "COMPRAS_GOV",
                         "status": "pendente",
-                        "status_analise": "NOVA",
+                        "status_analise": "radar",
                         "prioridade": "ALTA",
                         "atualizado_em": datetime.now().isoformat(),
                     }
                     try:
-                        client.table("licitacoes").upsert(row, on_conflict="numero_controle_pncp").execute()
+                        res = client.table("licitacoes").upsert(row, on_conflict="numero_controle_pncp").execute()
+                        if res.data and len(res.data) > 0:
+                            mapa_ids[str(num_ctrl)] = str(res.data[0].get("id", num_ctrl))
                     except Exception as err_db:
                         logger.debug(f"[SUPABASE] Upsert ignorado ou erro: {err_db}")
         except Exception as e:
             logger.debug(f"[RADAR] Supabase opcional indisponível: {e}")
+
+    # 3. Envia cada card individual com botões Inline interativos (limita a 10 para evitar flood)
+    for op in encontrados[:10]:
+        val_str = f"R$ {op['valor']:,.2f}" if op['valor'] else "Não informado"
+        card = (
+            f"🏛 *{op['orgao']}* ({op['municipio']}/{uf})\n"
+            f"📋 *Modalidade:* {op['modalidade']}\n"
+            f"💵 *Valor Estimado:* {val_str}\n"
+            f"📝 *Objeto:* _{op['objeto'][:180]}..._\n\n"
+            f"🔗 [Acessar Edital / Portal]({op['link']})"
+        )
+
+        num_ctrl = str(op.get("numero_controle") or "")
+        lic_id = mapa_ids.get(num_ctrl, num_ctrl)
+        link_edital = op.get("link") or "https://pncp.gov.br"
+
+        reply_markup = {
+            "inline_keyboard": [
+                [{"text": "🔗 Acessar Edital", "url": link_edital}],
+                [
+                    {"text": "🛠️ Mover p/ Serviços", "callback_data": f"triar:servico:{lic_id}"},
+                    {"text": "📦 Serv + Prod", "callback_data": f"triar:misto:{lic_id}"}
+                ],
+                [{"text": "✅ Aprovar para Participação", "callback_data": f"aprovar:{lic_id}"}]
+            ]
+        }
+        TelegramService.enviar_mensagem(card, reply_markup=reply_markup)
 
     return encontrados
 

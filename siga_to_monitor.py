@@ -111,14 +111,21 @@ class TelegramDispatcher:
             "━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
 
+        keyboard = [
+            [{"text": "🔗 Acessar no SIGA-TO", "url": link_processo}],
+            [
+                {"text": "🛠️ Mover p/ Serviços", "callback_data": f"triar:servico:{numero_processo}"},
+                {"text": "📦 Serv + Prod", "callback_data": f"triar:misto:{numero_processo}"}
+            ],
+            [{"text": "✅ Aprovar para Participação", "callback_data": f"aprovar:{numero_processo}"}]
+        ]
+
         payload = {
             "chat_id": self.chat_id,
             "text": mensagem_html,
             "parse_mode": "HTML",
             "reply_markup": {
-                "inline_keyboard": [
-                    [{"text": "🔗 Acessar no SIGA-TO", "url": link_processo}]
-                ]
+                "inline_keyboard": keyboard
             },
             "disable_web_page_preview": True,
         }

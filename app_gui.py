@@ -5069,6 +5069,13 @@ class App(ctk.CTk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
+        # Inicia o Listener de Callbacks do Telegram em thread daemon
+        try:
+            from telegram_service import iniciar_listener_telegram
+            iniciar_listener_telegram()
+        except Exception as exc_tg:
+            logger.warning(f"Não foi possível iniciar o listener do Telegram: {exc_tg}")
+
     def on_closing(self) -> None:
         """Encerramento imediato para evitar deadlock no Tcl/Tk (GIL)."""
         import os
@@ -5201,6 +5208,12 @@ def run_gui() -> None:
         import sys
         print(f"O robô já está em execução! (Lock retido). Encerrando. Erro: {e}")
         sys.exit(0)
+
+    try:
+        from telegram_service import iniciar_listener_telegram
+        iniciar_listener_telegram()
+    except Exception as e:
+        logger.warning(f"Aviso ao inicializar listener do Telegram: {e}")
 
     app = App()
     app.mainloop()

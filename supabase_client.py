@@ -514,9 +514,36 @@ def atualizar_status_licitacao(licitacao_id: str, status_analise: str, campos_ex
         }
         if campos_extras:
             dados.update(campos_extras)
-        get_client().table("licitacoes").update(dados).eq("id", licitacao_id).execute()
-        logger.info(f"✅ Licitação '{licitacao_id}' movida para status '{status_analise}'.")
-        return True
+        client = get_client()
+        # 1. Tenta atualizar por id primário
+        try:
+            res = client.table("licitacoes").update(dados).eq("id", licitacao_id).execute()
+            if res.data:
+                logger.info(f"✅ Licitação '{licitacao_id}' movida para status '{status_analise}'.")
+                return True
+        except Exception:
+            pass
+
+        # 2. Tenta por numero_controle_pncp
+        try:
+            res_pncp = client.table("licitacoes").update(dados).eq("numero_controle_pncp", licitacao_id).execute()
+            if res_pncp.data:
+                logger.info(f"✅ Licitação (PNCP '{licitacao_id}') movida para status '{status_analise}'.")
+                return True
+        except Exception:
+            pass
+
+        # 3. Tenta por numero_pregao
+        try:
+            res_pregao = client.table("licitacoes").update(dados).eq("numero_pregao", licitacao_id).execute()
+            if res_pregao.data:
+                logger.info(f"✅ Licitação (Pregão '{licitacao_id}') movida para status '{status_analise}'.")
+                return True
+        except Exception:
+            pass
+
+        logger.warning(f"Nenhum registro encontrado no Supabase para licitacao_id='{licitacao_id}'")
+        return False
     except Exception as exc:
         logger.warning(f"Erro ao atualizar status da licitação '{licitacao_id}': {exc}")
         return False
