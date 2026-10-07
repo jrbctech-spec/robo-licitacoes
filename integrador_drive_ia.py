@@ -564,6 +564,11 @@ Responda ESTRITAMENTE em formato JSON válido:
 
     headers = {"Content-Type": "application/json"}
     payload = {
+        "systemInstruction": {
+            "parts": [{
+                "text": "Responda ESTRITAMENTE em Português do Brasil. Jamais inclua rascunhos, pensamentos ou frases em inglês como 'Let's suggest' ou 'Let's set'. Retorne apenas o parecer técnico formatado."
+            }]
+        },
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 1500}
     }

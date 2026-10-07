@@ -513,9 +513,9 @@ class PainelDashboard(ctk.CTkFrame):
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
         self.grid_rowconfigure(3, weight=1)
 
+        # 0. Top Bar (Chrome, Drive, Radars)
         chrome_frame = ctk.CTkFrame(self, fg_color="transparent")
         chrome_frame.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 10))
         chrome_frame.grid_columnconfigure(0, weight=1)
@@ -547,8 +547,9 @@ class PainelDashboard(ctk.CTkFrame):
         )
         self.btn_radar_telegram.pack(side="right", padx=10)
 
+        # 1. Cards de Métricas (Radar PNCP | Volume Total | Status do Sistema)
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
-        cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
+        cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 10))
         cards_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.card_radar_pncp = MetricCard(cards_frame, titulo="Radar PNCP", valor_inicial="0", subtitulo="Certames Identificados", cor_destaque=COR["accent_cyan"], icone="🌐")
@@ -560,20 +561,59 @@ class PainelDashboard(ctk.CTkFrame):
         self.card_status = MetricCard(cards_frame, titulo="Status do Sistema", valor_inicial="Online", subtitulo="SIGA-TO & TG Conectados", cor_destaque=COR["accent_blue"], icone="⚡")
         self.card_status.grid(row=0, column=2, padx=(6, 0), sticky="ew")
 
-        main_content = ctk.CTkFrame(self, fg_color="transparent")
-        
+        # 2. Ações Rápidas & Atalhos (Horizontal, abaixo dos cards de métricas)
+        atalhos_frame = ctk.CTkFrame(self, fg_color="transparent")
+        atalhos_frame.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 10))
+        atalhos_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
-        main_content.grid(row=2, column=0, sticky="nsew")
-        main_content.grid_columnconfigure(0, weight=1)
-        main_content.grid_columnconfigure(1, weight=0, minsize=240)
-        main_content.grid_rowconfigure(0, weight=1)
+        ctk.CTkButton(
+            atalhos_frame,
+            text="📄  Adicionar Pregão / Dispensa",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_cyan"],
+            text_color="#000000",
+            hover_color=COR["accent_cyan"],
+            height=38,
+            corner_radius=8,
+            command=lambda: self.app.selecionar_aba("📄  Editais & Custos"),
+        ).grid(row=0, column=0, sticky="ew", padx=(0, 6))
 
-        card_lics = CardFrame(main_content)
-        card_lics.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        card_lics.grid_rowconfigure(2, weight=1)
+        ctk.CTkButton(
+            atalhos_frame,
+            text="🌐  Buscar no PNCP",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_purple"],
+            text_color="#FFFFFF",
+            hover_color="#7C3AED",
+            height=38,
+            corner_radius=8,
+            command=self._buscar_no_pncp_bg,
+        ).grid(row=0, column=1, sticky="ew", padx=6)
+
+        ctk.CTkButton(
+            atalhos_frame,
+            text="🚀  Console de Lances ao Vivo",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_green"],
+            text_color="#000000",
+            hover_color=COR["accent_cyan"],
+            height=38,
+            corner_radius=8,
+            command=lambda: self.app.selecionar_aba("⚡  Console da Sessão"),
+        ).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+
+        # 3. Oportunidades do Dia (Largura Total 100% da tela)
+        card_lics = CardFrame(self)
+        card_lics.grid(row=3, column=0, sticky="nsew", padx=0, pady=0)
         card_lics.grid_columnconfigure(0, weight=1)
+        card_lics.grid_rowconfigure(2, weight=1)
 
-        ctk.CTkLabel(card_lics, text="📅 Oportunidades do Dia", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
+        ctk.CTkLabel(
+            card_lics,
+            text="📅 Oportunidades do Dia",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            text_color=COR["text_primary"],
+        ).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 4))
 
         self._criar_barra_filtros(card_lics)
 
@@ -585,49 +625,18 @@ class PainelDashboard(ctk.CTkFrame):
         self.scroll_lics = ctk.CTkScrollableFrame(tbl_frame, fg_color="transparent")
         self.scroll_lics.grid(row=0, column=0, sticky="nsew")
         self.tree_lics = self.scroll_lics # backward compatibility for existing references that expect a widget
-        
-        # self.configurar_menu_contexto() - context menu adapted for cards if needed
 
-        card_dicas = CardFrame(main_content)
-        card_dicas.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
-        card_dicas.grid_columnconfigure(0, weight=1)
-
-        ctk.CTkLabel(card_dicas, text="⚡  Ações Rápidas & Atalhos", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w", padx=16, pady=(12, 10))
-
-        ctk.CTkButton(card_dicas, text="📄  Adicionar Pregão / Dispensa", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_cyan"], text_color="#000000", hover_color=COR["accent_cyan"], height=38, command=lambda: self.app.selecionar_aba("📄  Editais & Custos")).grid(row=1, column=0, sticky="ew", padx=16, pady=4)
-        ctk.CTkButton(card_dicas, text="🌐  Buscar no PNCP", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_purple"], text_color="#FFFFFF", height=38, command=self._buscar_no_pncp_bg).grid(row=2, column=0, sticky="ew", padx=16, pady=4)
-        ctk.CTkButton(card_dicas, text="🚀  Console de Lances ao Vivo", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_green"], text_color="#000000", height=38, command=lambda: self.app.selecionar_aba("⚡  Console da Sessão")).grid(row=3, column=0, sticky="ew", padx=16, pady=4)
-
-        card_multi = CardFrame(self)
-        card_multi.grid(row=3, column=0, sticky="nsew", padx=0, pady=(12, 0))
-        card_multi.grid_columnconfigure(0, weight=1)
-        card_multi.grid_rowconfigure(1, weight=1)
-        
-        top_multi = ctk.CTkFrame(card_multi, fg_color="transparent")
-        top_multi.grid(row=0, column=0, sticky="ew", padx=16, pady=10)
-        top_multi.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(top_multi, text="⚔️ Painel de Multi-Disputas", font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=0, column=0, sticky="w")
-        self.btn_iniciar_multi = ctk.CTkButton(top_multi, text="🚀 Iniciar Monitoramento de Todas as Disputas", font=ctk.CTkFont(size=12, weight="bold"), fg_color=COR["accent_green"], text_color="#000000", command=self._toggle_multi_disputas)
-        self.btn_iniciar_multi.grid(row=0, column=2, sticky="e")
-        
-        self.tree_multi = ttk.Treeview(card_multi, columns=("orgao", "pregao", "status", "lider", "acao"), show="headings", height=5)
-        self.tree_multi.heading("orgao", text="UASG / Órgão")
-        self.tree_multi.heading("pregao", text="Nº Pregão")
-        self.tree_multi.heading("status", text="Status")
-        self.tree_multi.heading("lider", text="Líder R$")
-        self.tree_multi.heading("acao", text="Ação")
-        self.tree_multi.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 16))
+    @property
+    def tree_multi(self):
+        """Retrocompatibilidade com chamadas ao antigo tree_multi no painel da dashboard."""
+        if hasattr(self.app, "painel_multi"):
+            return getattr(self.app.painel_multi, "tree_multi", None)
+        return None
 
     def _toggle_multi_disputas(self):
-        import asyncio
-        from gerenciador_multi_disputas import obter_motor_multi
-        motor = obter_motor_multi()
-        if motor._rodando:
-            asyncio.run(motor.parar_loop())
-            self.btn_iniciar_multi.configure(text="🚀 Iniciar Monitoramento de Todas as Disputas", fg_color=COR["accent_green"])
-        else:
-            asyncio.run(motor.iniciar_loop())
-            self.btn_iniciar_multi.configure(text="🛑 Parar Monitoramento", fg_color="#EF4444")
+        """Retrocompatibilidade com chamadas ao antigo _toggle_multi_disputas."""
+        if hasattr(self.app, "painel_multi"):
+            self.app.painel_multi._toggle_multi_disputas()
 
     def _executar_radar_diario(self) -> None:
         self.btn_radar_diario.configure(text="⏳ Rodando Radar...", state="disabled")
@@ -1521,7 +1530,7 @@ class PainelEditais(ctk.CTkFrame):
             text_color="#FFFFFF",
             corner_radius=8,
             height=34,
-            command=self._aprovar_participacao_disputa,
+            command=self._aprovar_participacao,
         )
         self.btn_aprovar_participacao.pack(side="right", padx=(8, 12), pady=10)
 
@@ -1599,7 +1608,7 @@ class PainelEditais(ctk.CTkFrame):
             text_color=COR["accent_cyan"],
         )
         lbl_hint.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
-        btn_cotar = ctk.CTkButton(card_itens, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre)
+        btn_cotar = ctk.CTkButton(card_itens, text="🛒 Cotar no Mercado Livre / Shopee", command=self.cotar_mercado_livre)
         btn_cotar.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 10))
 
     def cotar_mercado_livre(self):
@@ -1743,6 +1752,14 @@ class PainelEditais(ctk.CTkFrame):
             })
 
         self.licitacao_ativa = lic
+        self.licitacao_id = lic.get("id")
+        self.numero_controle_pncp = lic.get("numero_controle_pncp") or lic.get("id_pncp")
+        self.numero_pregao = lic.get("numero_pregao")
+        self.objeto_edital = lic.get("objeto")
+        self.orgao_edital = lic.get("orgao_nome") or lic.get("orgao")
+        self.uf = lic.get("uf") or "TO"
+        self.municipio = lic.get("municipio") or ""
+        self.valor_estimado = float(lic.get("valor_estimado") or 0.0)
         self.itens_carregados = itens_para_sessao
         if hasattr(self.app, "definir_licitacao_ativa"):
             self.app.definir_licitacao_ativa(lic, itens_para_sessao)
@@ -2271,9 +2288,10 @@ class PainelEditais(ctk.CTkFrame):
         self.app.itens_ativos = itens
         self._exibir_itens_completos(lic, itens)
 
-    def _aprovar_participacao_disputa(self) -> None:
+    def _aprovar_participacao(self) -> None:
         """
         Aprova formalmente a participação da JRBC TECH no certame:
+        - Auto-cadastra se não possuir ID prévio no Supabase (upsert imediato)
         - Grava status_analise = 'aprovado_disputa'
         - Grava stop_loss e margens no Supabase (licitacoes e itens_licitacao)
         - Agenda a data da disputa
@@ -2285,9 +2303,18 @@ class PainelEditais(ctk.CTkFrame):
             messagebox.showwarning("Atenção", "Selecione uma licitação primeiro para aprovar a participação.")
             return
 
-        lic_id = lic.get("id") or getattr(self, "licitacao_id", None)
+        # Recupera dados da licitação carregada na tela
+        self.licitacao_id = getattr(self, "licitacao_id", None) or lic.get("id")
+        self.numero_controle_pncp = getattr(self, "numero_controle_pncp", None) or lic.get("numero_controle_pncp") or lic.get("id_pncp")
+        self.numero_pregao = getattr(self, "numero_pregao", None) or lic.get("numero_pregao")
+        self.objeto_edital = getattr(self, "objeto_edital", None) or lic.get("objeto")
+        self.orgao_edital = getattr(self, "orgao_edital", None) or lic.get("orgao_nome") or lic.get("orgao")
+        self.uf = getattr(self, "uf", None) or lic.get("uf") or "TO"
+        self.municipio = getattr(self, "municipio", None) or lic.get("municipio") or ""
+        self.valor_estimado = getattr(self, "valor_estimado", None) or lic.get("valor_estimado") or 0.0
+
         itens = getattr(self, "itens_carregados", []) or getattr(self, "itens_ativos", []) or []
-        
+
         # 1. Calcula o stop loss total
         total_stop_loss = 0.0
         for it in itens:
@@ -2296,7 +2323,7 @@ class PainelEditais(ctk.CTkFrame):
                 qtd = float(it.get("quantidade") or 1.0)
                 total_stop_loss += (piso * qtd)
 
-        val_est = float(lic.get("valor_estimado") or 0.0)
+        val_est = float(self.valor_estimado or 0.0)
         if total_stop_loss <= 0.0:
             total_stop_loss = val_est * 0.85 if val_est > 0 else 1000.0
 
@@ -2304,31 +2331,29 @@ class PainelEditais(ctk.CTkFrame):
 
         import threading
         def worker():
-            nonlocal lic_id
             try:
                 import uuid
                 from datetime import datetime, timezone
                 from supabase_client import get_client, aprovar_licitacao_disputa
                 sb = get_client()
 
-                # Se não possuir ID prévio no Supabase (ex: edital aberto direto por link PNCP ou Drive),
-                # realiza auto-cadastro (upsert) imediato do certame
-                if not lic_id:
+                # Se self.licitacao_id for None/vazio:
+                # Recupere os dados da licitação carregada na tela e faça um upsert imediato no Supabase
+                if not getattr(self, "licitacao_id", None):
                     logger.info("⚡ Certame sem ID prévio: executando auto-cadastro (upsert) imediato no Supabase...")
-                    num_pncp = lic.get("numero_controle_pncp") or lic.get("id_pncp")
-                    if not num_pncp:
-                        num_pncp = f"DRIVE_{uuid.uuid4().hex[:12]}"
+                    if not self.numero_controle_pncp:
+                        self.numero_controle_pncp = f"DRIVE_{uuid.uuid4().hex[:12]}"
 
                     payload_auto = {
-                        "numero_controle_pncp": str(num_pncp),
-                        "numero_pregao": str(lic.get("numero_pregao") or "S/N"),
-                        "numero_uasg": str(lic.get("numero_uasg") or "S/N"),
-                        "objeto": str(lic.get("objeto") or "Objeto do certame"),
-                        "orgao_nome": str(lic.get("orgao_nome") or lic.get("orgao") or "Órgão Não Informado"),
+                        "numero_controle_pncp": self.numero_controle_pncp,
+                        "numero_pregao": self.numero_pregao or "Dispensa",
+                        "objeto": self.objeto_edital or "Objeto do certame",
+                        "orgao_nome": self.orgao_edital or "Órgão Não Informado",
+                        "uf": self.uf,
+                        "municipio": self.municipio,
                         "valor_estimado": val_est,
                         "status_analise": "aprovado_disputa",
-                        "stop_loss": total_stop_loss,
-                        "uf": str(lic.get("uf") or "TO"),
+                        "prioridade": "ALTA",
                         "portal": str(lic.get("portal") or ("SIGA_TO" if "siga.to" in str(lic.get("link_sistema", "")) else "COMPRAS_GOV")),
                         "link_sistema": str(lic.get("link_sistema") or lic.get("link_edital") or ""),
                         "atualizado_em": datetime.now(timezone.utc).isoformat(),
@@ -2342,18 +2367,19 @@ class PainelEditais(ctk.CTkFrame):
                         res_cad = sb.table("licitacoes").insert(payload_auto).execute()
 
                     if res_cad and res_cad.data and len(res_cad.data) > 0:
-                        lic_id = str(res_cad.data[0].get("id"))
-                        self.licitacao_id = lic_id
-                        lic["id"] = lic_id
+                        self.licitacao_id = res_cad.data[0]["id"]
+                        lic["id"] = self.licitacao_id
                         if hasattr(self, "licitacao_ativa") and isinstance(self.licitacao_ativa, dict):
-                            self.licitacao_ativa["id"] = lic_id
+                            self.licitacao_ativa["id"] = self.licitacao_id
                         if hasattr(self.app, "licitacao_ativa") and isinstance(self.app.licitacao_ativa, dict):
-                            self.app.licitacao_ativa["id"] = lic_id
-                        logger.info(f"✅ Certame auto-cadastrado no Supabase com sucesso! ID: {lic_id}")
+                            self.app.licitacao_ativa["id"] = self.licitacao_id
+                        logger.info(f"✅ Certame cadastrado no Supabase com sucesso! ID: {self.licitacao_id}")
                     else:
                         raise RuntimeError("Supabase não retornou registro após auto-cadastro do certame.")
 
-                # Grava os itens em itens_licitacao
+                lic_id = self.licitacao_id
+
+                # Prossiga salvando os itens em itens_licitacao
                 if itens and lic_id:
                     for idx, it in enumerate(itens, 1):
                         try:
@@ -2381,9 +2407,9 @@ class PainelEditais(ctk.CTkFrame):
 
                 # Notifica o Telegram via TelegramService
                 from telegram_service import TelegramService
-                orgao = str(lic.get("orgao_nome") or "Órgão Não Informado")
-                pregao = str(lic.get("numero_pregao") or "S/N")
-                uf = str(lic.get("uf") or "TO")
+                orgao = str(self.orgao_edital or lic.get("orgao_nome") or "Órgão Não Informado")
+                pregao = str(self.numero_pregao or lic.get("numero_pregao") or "S/N")
+                uf = str(self.uf or lic.get("uf") or "TO")
                 portal = str(lic.get("portal") or "COMPRAS_GOV")
 
                 msg_tg = (
@@ -2407,7 +2433,7 @@ class PainelEditais(ctk.CTkFrame):
 
                     resp = messagebox.askyesno(
                         "Participação Aprovada! 🎯",
-                        f"✅ Certame APROVADO PARA DISPUTA com sucesso!\n\n"
+                        f"✅ Licitação cadastrada e aprovada com sucesso!\n\n"
                         f"🛑 Stop-Loss: R$ {total_stop_loss:,.2f}\n"
                         f"📲 Notificação enviada ao Telegram da JRBC TECH!\n\n"
                         f"Deseja abrir agora a agenda '🎯 Aprovados para Participação'?"
@@ -2422,6 +2448,7 @@ class PainelEditais(ctk.CTkFrame):
 
         threading.Thread(target=worker, daemon=True).start()
 
+    _aprovar_participacao_disputa = _aprovar_participacao
 
 # ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
 class TkinterLogHandler(logging.Handler):
@@ -4620,7 +4647,42 @@ class PainelServicos(ctk.CTkFrame):
                 self.after(0, atualiza_ui)
             threading.Thread(target=bg_search, daemon=True).start()
             
-        ctk.CTkButton(top, text="Buscar no ML (Full)", command=buscar).pack(pady=5)
+        f_acoes_busca = ctk.CTkFrame(top, fg_color="transparent")
+        f_acoes_busca.pack(pady=5)
+
+        def _abrir_shopee():
+            termo = entry_termo.get().strip() or termo_sugerido
+            import urllib.parse, webbrowser
+            webbrowser.open(f"https://shopee.com.br/search?keyword={urllib.parse.quote(termo)}")
+
+        def _abrir_ml():
+            termo = entry_termo.get().strip() or termo_sugerido
+            import urllib.parse, webbrowser
+            webbrowser.open(f"https://lista.mercadolivre.com.br/{urllib.parse.quote(termo)}")
+
+        ctk.CTkButton(
+            f_acoes_busca,
+            text="🟠 Abrir na Shopee",
+            font=("Arial", 11, "bold"),
+            fg_color="#EE4D2D",
+            hover_color="#D03E1F",
+            text_color="#FFFFFF",
+            command=_abrir_shopee,
+            width=140,
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(
+            f_acoes_busca,
+            text="🟡 Abrir no Mercado Livre",
+            font=("Arial", 11, "bold"),
+            fg_color="#FFE600",
+            hover_color="#E5CF00",
+            text_color="#1F2937",
+            command=_abrir_ml,
+            width=160,
+        ).pack(side="left", padx=4)
+
+        ctk.CTkButton(f_acoes_busca, text="🔍 Buscar no ML (Full)", command=buscar, width=140).pack(side="left", padx=4)
         
         frame_fin = ctk.CTkFrame(top)
         frame_fin.pack(fill="x", padx=20, pady=5)
@@ -4765,7 +4827,7 @@ class PainelProdutos(ctk.CTkFrame):
         ctk.CTkButton(btn_frame, text="🔍 Cruzar com Fornecedores", command=self.cruzar_fornecedores).grid(row=0, column=1, padx=10)
         ctk.CTkButton(btn_frame, text="📥 Importar Tabela de Distribuidor", command=self.importar_tabela_distribuidor).grid(row=0, column=2, padx=10)
         ctk.CTkButton(btn_frame, text="📄 Gerar Proposta Comercial", command=self.gerar_proposta_comercial).grid(row=0, column=3, padx=10)
-        ctk.CTkButton(btn_frame, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre).grid(row=0, column=4, padx=10)
+        ctk.CTkButton(btn_frame, text="🛒 Cotar no Mercado Livre / Shopee", command=self.cotar_mercado_livre).grid(row=0, column=4, padx=10)
         
     def selecionar_e_precificar(self):
         prod = self._get_selected_prod()
@@ -5153,6 +5215,83 @@ class PainelAprovados(ctk.CTkFrame):
             messagebox.showinfo("Link", "Certame não possui link direto cadastrado.")
 
 
+# ─── PAINEL 7: MULTI-DISPUTAS SIMULTÂNEAS ──────────────────────────────────────
+class PainelMultiDisputas(ctk.CTkFrame):
+    """
+    Aba 7: 🚀 Multi-Disputas
+    Painel dedicado ao monitoramento e controle simultâneo de múltiplos pregões e certames.
+    """
+    def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.app = app
+        self._build()
+
+    def _build(self) -> None:
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
+        # Header com título e botão de iniciar
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=(10, 10))
+        header_frame.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            header_frame,
+            text="🚀  Painel de Multi-Disputas Simultâneas",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color=COR["accent_green"],
+        ).grid(row=0, column=0, sticky="w")
+
+        self.btn_iniciar_multi = ctk.CTkButton(
+            header_frame,
+            text="🚀 Iniciar Monitoramento de Todas as Disputas",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_green"],
+            text_color="#000000",
+            hover_color=COR["accent_cyan"],
+            height=36,
+            corner_radius=8,
+            command=self._toggle_multi_disputas,
+        )
+        self.btn_iniciar_multi.grid(row=0, column=2, sticky="e")
+
+        # Card da Tabela Treeview
+        card_tabela = CardFrame(self)
+        card_tabela.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 16))
+        card_tabela.grid_columnconfigure(0, weight=1)
+        card_tabela.grid_rowconfigure(0, weight=1)
+
+        from tkinter import ttk
+        cols = ("orgao", "pregao", "status", "lider", "acao")
+        self.tree_multi = ttk.Treeview(card_tabela, columns=cols, show="headings", height=14)
+        self.tree_multi.heading("orgao", text="UASG / Órgão")
+        self.tree_multi.heading("pregao", text="Nº Pregão")
+        self.tree_multi.heading("status", text="Status")
+        self.tree_multi.heading("lider", text="Líder R$")
+        self.tree_multi.heading("acao", text="Ação")
+
+        self.tree_multi.column("orgao", width=260, anchor="w")
+        self.tree_multi.column("pregao", width=140, anchor="center")
+        self.tree_multi.column("status", width=160, anchor="center")
+        self.tree_multi.column("lider", width=140, anchor="e")
+        self.tree_multi.column("acao", width=130, anchor="center")
+
+        self.tree_multi.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
+        self.tree_multi.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
+        self.tree_multi.grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
+
+    def _toggle_multi_disputas(self) -> None:
+        import asyncio
+        from gerenciador_multi_disputas import obter_motor_multi
+        motor = obter_motor_multi()
+        if motor._rodando:
+            asyncio.run(motor.parar_loop())
+            self.btn_iniciar_multi.configure(text="🚀 Iniciar Monitoramento de Todas as Disputas", fg_color=COR["accent_green"])
+        else:
+            asyncio.run(motor.iniciar_loop())
+            self.btn_iniciar_multi.configure(text="🛑 Parar Monitoramento", fg_color="#EF4444")
+
+
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -5215,7 +5354,7 @@ class App(ctk.CTk):
         lbl_logo.grid(row=0, column=0, padx=16, pady=(16, 20), sticky="w")
 
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
-        # 6 Abas Oficiais do Fluxo JRBC TECH
+        # 7 Abas Oficiais do Fluxo JRBC TECH
         abas = [
             ("📊  Dashboard", "dashboard"),
             ("🛠️  Serviços", "servicos"),
@@ -5223,6 +5362,7 @@ class App(ctk.CTk):
             ("📄  Editais & Custos", "editais"),
             ("🎯  Aprovados para Participação", "aprovados"),
             ("⚡  Console da Sessão", "sessao"),
+            ("🚀  Multi-Disputas", "multi"),
         ]
 
         for idx, (nome, id_aba) in enumerate(abas, 1):
@@ -5257,6 +5397,7 @@ class App(ctk.CTk):
         self.painel_editais = PainelEditais(self.tab_container, app=self)
         self.painel_aprovados = PainelAprovados(self.tab_container, app=self)
         self.painel_sessao = PainelSessao(self.tab_container, app=self)
+        self.painel_multi = PainelMultiDisputas(self.tab_container, app=self)
         self.painel_pncp = PainelPNCP(self.tab_container, app=self)
 
         self._paineis["📊  Dashboard"] = self.painel_dashboard
@@ -5265,6 +5406,7 @@ class App(ctk.CTk):
         self._paineis["📄  Editais & Custos"] = self.painel_editais
         self._paineis["🎯  Aprovados para Participação"] = self.painel_aprovados
         self._paineis["⚡  Console da Sessão"] = self.painel_sessao
+        self._paineis["🚀  Multi-Disputas"] = self.painel_multi
 
         for p in self._paineis.values():
             p.grid(row=0, column=0, sticky="nsew")

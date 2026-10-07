@@ -166,6 +166,7 @@ class SigaMonitor:
 
     def _salvar_supabase(self, num_proc: str, orgao: str, objeto: str, data_fim: str, link: str):
         dados_licitacao = {
+            "numero_controle_pncp": f"SIGA_{num_proc}",
             "numero_uasg": "SIGA_TO",  # Evita conflitos com UASGs numéricas
             "numero_pregao": num_proc,
             "orgao": orgao,

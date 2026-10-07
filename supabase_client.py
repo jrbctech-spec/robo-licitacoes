@@ -274,7 +274,12 @@ def inserir_licitacao(dados: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Registro inserido/atualizado como dicionário.
     """
-    conflict_col = "numero_controle_pncp" if dados.get("numero_controle_pncp") else "numero_uasg,numero_pregao"
+    if not dados.get("numero_controle_pncp"):
+        import uuid
+        uasg = str(dados.get("numero_uasg") or "S_UASG").strip()
+        preg = str(dados.get("numero_pregao") or "S_PREG").replace("/", "_").strip()
+        dados["numero_controle_pncp"] = f"GEN_{uasg}_{preg}_{uuid.uuid4().hex[:8]}"
+    conflict_col = "numero_controle_pncp"
     try:
         resposta = (
             get_client()

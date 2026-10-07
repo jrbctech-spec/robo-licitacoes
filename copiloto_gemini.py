@@ -25,10 +25,8 @@ Diretrizes de Atuação:
 """
 
 MODELOS_GEMINI = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.5-flash",
-    "gemini-3.8-flash",
-    "gemini-3-flash-preview",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
 ]
 
 
