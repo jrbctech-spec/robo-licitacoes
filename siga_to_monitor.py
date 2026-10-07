@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
-from playwright.async_api import async_playwright
+from playwright.async_api import BrowserContext, async_playwright
 
 from supabase_client import inserir_licitacao
 
@@ -228,7 +228,7 @@ class SigaMonitor:
         try:
             async with async_playwright() as p:
                 import chrome_connector
-                context = None
+                context: Optional[BrowserContext] = None
                 is_cdp = False
 
                 # 1. Dá preferência expressa para conectar via CDP se a porta 9222 já estiver ativa
@@ -236,7 +236,7 @@ class SigaMonitor:
                     try:
                         logger.info("🔌 Conectando ao Chrome oficial via CDP na porta 9222...")
                         browser = await p.chromium.connect_over_cdp("http://localhost:9222")
-                        context = browser.contexts[0] if browser.contexts else browser
+                        context = browser.contexts[0] if browser.contexts else await browser.new_context()
                         is_cdp = True
                     except Exception as e_cdp:
                         logger.warning(f"Falha ao conectar via CDP na porta 9222: {e_cdp}")

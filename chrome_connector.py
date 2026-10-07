@@ -31,7 +31,7 @@ async def obter_contexto_navegador(playwright) -> Tuple[Optional[BrowserContext]
         try:
             logger.info("🔌 Conectando ao Chrome oficial via CDP na porta 9222...")
             browser = await playwright.chromium.connect_over_cdp(CDP_URL)
-            context = browser.contexts[0] if browser.contexts else browser
+            context = browser.contexts[0] if browser.contexts else await browser.new_context()
             return context, True
         except Exception as e:
             logger.error(f"Falha ao conectar via CDP: {e}")
