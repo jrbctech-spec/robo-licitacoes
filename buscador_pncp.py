@@ -6,6 +6,7 @@ JRBC TECH - CNPJ: 65.488.003/0001-61
 
 import os
 import sys
+import re
 import time
 import json
 import html
@@ -15,6 +16,7 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from radar_telegram import validar_edital_jrbc, TERMOS_BLOQUEADOS
 
 load_dotenv()
 
@@ -67,6 +69,7 @@ TERMOS_CNAE = [
     "peças de informática"
 ]
 
+
 def carregar_historico_notificados() -> set:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     if not CACHE_FILE.exists():
@@ -89,16 +92,39 @@ def salvar_historico_notificados(notificados: set):
     except Exception as e:
         logger.error(f"Falha ao salvar cache de notificações: {e}")
 
-def formatar_link_pncp(cnpj: str, ano: str, sequencial: str) -> str:
-    cnpj_limpo = "".join(filter(str.isdigit, cnpj))
-    if cnpj_limpo and ano and sequencial:
-        return f"https://pncp.gov.br/app/editais/{cnpj_limpo}/{ano}/{sequencial}"
+def formatar_link_pncp(item: dict) -> str:
+    # 1. Se o órgão informou o link direto da sala (ex: Compras.gov.br), usa direto
+    link_origem = item.get("linkSistemaOrigem")
+    if isinstance(link_origem, str) and "http" in link_origem:
+        return link_origem
+
+    # 2. Tenta extrair diretamente dos campos da API do PNCP
+    cnpj = item.get("cnpjOrgao") or item.get("orgaoEntidade", {}).get("cnpj") or item.get("orgao_cnpj") or item.get("cnpj")
+    ano = item.get("anoCompra") or item.get("ano")
+    seq = item.get("sequencialCompra") or item.get("sequencial")
+    
+    if cnpj and ano and seq:
+        try:
+            return f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{int(seq)}"
+        except Exception:
+            return f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
+
+    # 3. Fallback via regex no numeroControlePNCP (ex: 26063838000118-1-000129/2026)
+    num_controle = item.get("numeroControlePNCP") or item.get("numero_controle_pncp") or ""
+    m = re.match(r"(\d+)-\d+-(\d+)/(\d+)", str(num_controle))
+    if m:
+        cnpj_extraido = m.group(1)
+        seq_extraido = int(m.group(2))
+        ano_extraido = m.group(3)
+        return f"https://pncp.gov.br/app/editais/{cnpj_extraido}/{ano_extraido}/{seq_extraido}"
+
     return "https://pncp.gov.br"
 
 from motor_assertivo import avaliar_certame
 from notificador_unificado import enviar_alerta_executivo
 from coletor_nucleogov import varrer_municipios_nucleogov
 from siga_monitor import varrer_siga_to
+from radar_telegram import validar_edital_jrbc
 
 def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
     url = "https://pncp.gov.br/api/search/"
@@ -132,6 +158,11 @@ def buscar_contratacoes_pncp(termo: str, modalidade: int = 8) -> list[dict]:
     return []
 
 def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, notificados: set):
+    objeto = edital.get("objeto") or edital.get("description") or edital.get("objetoCompra") or ""
+    if any(b in objeto.lower() for b in TERMOS_BLOQUEADOS) or not validar_edital_jrbc(objeto):
+        logger.debug(f"[CNAE DESCARTE] Objeto fora dos CNAEs JRBC TECH: {objeto[:80]}")
+        return
+
     cnpj = edital.get("orgao_cnpj") or edital.get("cnpj") or edital.get("orgaoEntidade", {}).get("cnpj", "")
     ano = edital.get("anoCompra") or edital.get("ano", datetime.now().year)
     seq = edital.get("sequencialCompra") or edital.get("sequencial") or edital.get("numero_sequencial", "1")
@@ -140,22 +171,38 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
     numero_controle = edital.get("numero_controle_pncp") or f"{cnpj}-{ano}-{seq}"
     codigo_unidade = edital.get("unidadeOrgao", {}).get("codigoUnidade") or "S/ UASG"
     numero_compra_fmt = f"{num_compra}/{ano}" if num_compra else "S/N"
-    data_abertura = edital.get("dataAberturaProposta") or edital.get("dataEncerramentoProposta") or None
     
-    link_edital = edital.get("linkSistemaOrigem") or formatar_link_pncp(cnpj, str(ano), str(seq))
+    data_abertura = (
+        edital.get("dataAberturaProposta")
+        or edital.get("data_inicio_recebimento_propostas")
+        or edital.get("dataPublicacaoPncp")
+        or edital.get("data_publicacao_pncp")
+        or None
+    )
+    data_encerramento = (
+        edital.get("dataEncerramentoProposta")
+        or edital.get("data_fim_recebimento_propostas")
+        or edital.get("dataAberturaProposta")
+        or None
+    )
+    
+    link_edital = formatar_link_pncp(edital)
+    url_sala = edital.get("linkSistemaOrigem") or link_edital
     tipo = "PRODUTO" if any(p in termo.lower() for p in ["toner", "peça", "cartucho", "suprimento"]) else "SERVICO"
 
     payload = {
         "numero_controle_pncp": numero_controle,
         "numero_uasg": codigo_unidade,
         "numero_pregao": numero_compra_fmt,
-        "objeto": edital.get("objeto") or edital.get("description", "Sem descrição"),
+        "objeto": objeto,
         "orgao_nome": edital.get("orgao_nome") or edital.get("orgao_razao_social", "Órgão Público"),
         "uf": edital.get("uf", "BR"),
         "municipio": edital.get("municipio_nome", "Nacional"),
         "valor_estimado": edital.get("valor_global") or edital.get("valor_total_estimado", 0.0),
         "data_abertura": data_abertura,
+        "data_encerramento": data_encerramento,
         "link_edital": link_edital,
+        "url_sala_disputa": url_sala,
         "termo_busca": termo,
         "modalidade": modalidade_nome,
         "tipo_contratacao": tipo,
@@ -175,15 +222,28 @@ def processar_e_salvar_edital(edital: dict, termo: str, modalidade_nome: str, no
     # payload["lucro_estimado"] = float(crivo.get("lucro_estimado", 0.0))
 
     # 1. Salva no Supabase
+    lic_id = None
     if supabase:
         try:
-            supabase.table("licitacoes").upsert(
+            res_up = supabase.table("licitacoes").upsert(
                 payload,
                 on_conflict="numero_controle_pncp"
             ).execute()
+            if res_up.data and isinstance(res_up.data, list) and len(res_up.data) > 0:
+                primeiro = res_up.data[0]
+                if isinstance(primeiro, dict):
+                    lic_id = primeiro.get("id")
             logger.info(f"[{payload['uf']}] {modalidade_nome} salva: {payload['orgao_nome'][:30]}")
         except Exception as e:
             logger.error(f"Erro ao salvar no Supabase: {e}")
+
+    # Sincroniza itens essenciais se tivermos o ID
+    if lic_id and cnpj and ano and seq:
+        try:
+            from pncp_client import sincronizar_itens_certame_supabase
+            sincronizar_itens_certame_supabase(cnpj, str(ano), str(seq), str(lic_id))
+        except Exception as e:
+            logger.warning(f"Aviso ao sincronizar itens do PNCP: {e}")
 
     # 2. Envia para o Telegram (apenas inéditos)
     if numero_controle not in notificados:
@@ -198,16 +258,21 @@ def processar_outras_fontes(oportunidades, notificados):
         id_unico = item.get("id_unico")
         if not id_unico: continue
         
+        objeto = item.get("objeto") or item.get("objetoCompra") or ""
+        if any(b in objeto.lower() for b in TERMOS_BLOQUEADOS) or not validar_edital_jrbc(objeto):
+            continue
+        
         payload = {
             "numero_controle_pncp": id_unico,
             "numero_uasg": "S/ UASG",
             "numero_pregao": item.get("numero_processo"),
-            "objeto": item.get("objeto"),
+            "objeto": objeto,
             "orgao_nome": item.get("orgao_nome"),
             "uf": item.get("uf"),
             "municipio": item.get("municipio", ""),
             "valor_estimado": item.get("valor_estimado"),
-            "data_abertura": None,
+            "data_abertura": item.get("data_abertura"),
+            "data_encerramento": item.get("data_encerramento") or item.get("data_fim") or item.get("data_fim_proposta"),
             "link_edital": item.get("link_edital"),
             "termo_busca": "TI",
             "modalidade": item.get("modalidade"),
@@ -274,10 +339,10 @@ def executar_varredura_tocantins():
             res_to = buscar_publicacoes_pncp(uf="TO", codigo_modalidade=mod, tamanho_pagina=50)
             itens_to = res_to.get("data", [])
             for item in itens_to:
-                objeto = (item.get("objetoCompra") or "").lower()
-                # from pncp_client TERMOS_CNAE might be needed or we can import it
-                if any(t.lower() in objeto for t in TERMOS_CNAE):
-                    processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
+                objeto = item.get("objetoCompra") or item.get("objeto") or ""
+                if not validar_edital_jrbc(objeto):
+                    continue
+                processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
             time.sleep(1.5)
     except Exception as e:
         logger.error(f"Erro ao varrer PNCP TO: {e}")
@@ -299,12 +364,18 @@ def executar_varredura_completa():
     for termo in TERMOS_CNAE:
         editais = buscar_contratacoes_pncp(termo, modalidade=8)
         for ed in editais:
+            objeto = ed.get("objetoCompra") or ed.get("objeto") or ed.get("description") or ""
+            if not validar_edital_jrbc(objeto):
+                continue
             processar_e_salvar_edital(ed, termo, "Dispensa Eletrônica", notificados)
         time.sleep(1.5)
 
     for termo in TERMOS_CNAE[:5]:
         editais = buscar_contratacoes_pncp(termo, modalidade=6)
         for ed in editais:
+            objeto = ed.get("objetoCompra") or ed.get("objeto") or ed.get("description") or ""
+            if not validar_edital_jrbc(objeto):
+                continue
             processar_e_salvar_edital(ed, termo, "Pregão Eletrônico", notificados)
         time.sleep(1.5)
 
@@ -315,9 +386,10 @@ def executar_varredura_completa():
             res_to = buscar_publicacoes_pncp(uf="TO", codigo_modalidade=mod, tamanho_pagina=50)
             itens_to = res_to.get("data", [])
             for item in itens_to:
-                objeto = (item.get("objetoCompra") or "").lower()
-                if any(t.lower() in objeto for t in TERMOS_CNAE):
-                    processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
+                objeto = item.get("objetoCompra") or item.get("objeto") or ""
+                if not validar_edital_jrbc(objeto):
+                    continue
+                processar_e_salvar_edital(item, "TI-TO", "Pregão Eletrônico" if mod == 6 else "Dispensa Eletrônica", notificados)
             time.sleep(1.5)
     except Exception as e:
         logger.error(f"Erro ao varrer PNCP TO: {e}")

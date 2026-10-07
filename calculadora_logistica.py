@@ -15,15 +15,21 @@ CUSTO_HORA_TECNICA = Decimal("65.00")  # Hora de técnico em trânsito/campo
 
 # Tabela aproximada de distâncias rodoviárias de Palmas para polos do TO
 DISTANCIAS_TO_KM = {
+    "PALMAS": 0,
     "PORTO NACIONAL": 60,
     "PARAISO DO TOCANTINS": 65,
+    "PARAISO": 65,
     "MIRACEMA DO TOCANTINS": 75,
     "GURUPI": 220,
     "ARAGUAINA": 380,
+    "ARAGUAÍNA": 380,
     "COLINAS DO TOCANTINS": 270,
     "DIANOPOLIS": 340,
-    "GUARAÍ": 180, # Tinha 'GUAGARA' no seu código, assumi Guaraí
-    "GUAGARA": 160
+    "GUARAÍ": 180,
+    "PORTO ALEGRE DO TOCANTINS": 290,
+    "PORTO ALEGRE DO TO": 290,
+    "ITACAJÁ": 300,
+    "ITACAJA": 300,
 }
 
 def calcular_custo_deslocamento(municipio_destino: str, uf_destino: str) -> dict:

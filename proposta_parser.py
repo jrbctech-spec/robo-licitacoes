@@ -140,7 +140,12 @@ class PropostaParser:
             from google import genai
             from google.genai import types
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    client_args={"timeout": 45.0},
+                ),
+            )
             prompt = (
                 "Você é um assistente financeiro de licitações.\n"
                 "Extraia todos os ITENS E CUSTOS UNITÁRIOS da Proposta Comercial de Preços abaixo em JSON.\n"
@@ -182,8 +187,16 @@ class PropostaParser:
                     continue
 
             if response and response.text:
-                data = json.loads(response.text)
-                itens_json = data.get("itens", []) if isinstance(data, dict) else data
+                texto_limpo = response.text.strip()
+                if texto_limpo.startswith("```"):
+                    texto_limpo = re.sub(r"^```(?:json)?\s*", "", texto_limpo)
+                    texto_limpo = re.sub(r"\s*```$", "", texto_limpo)
+                try:
+                    data = json.loads(texto_limpo)
+                except Exception as exc_j:
+                    logger.warning(f"Aviso: resposta do Gemini não é JSON puro na proposta: {exc_j}")
+                    data = {}
+                itens_json = data.get("itens", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
                 for i in itens_json:
                     if isinstance(i, dict) and "numero_item" in i and i.get("valor_unitario") is not None:

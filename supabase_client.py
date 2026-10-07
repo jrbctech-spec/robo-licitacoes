@@ -66,6 +66,9 @@ def get_client() -> Client:
     return _supabase_client
 
 
+get_supabase_client = get_client
+
+
 def testar_conexao() -> bool:
     """
     Verifica se a conexão com o Supabase está funcional.
@@ -494,4 +497,99 @@ def listar_oportunidades_salvas() -> list[dict[str, Any]]:
     return _OPORTUNIDADES_MEMORIA_LOCAL
 
 
+def atualizar_status_licitacao(licitacao_id: str, status_analise: str, campos_extras: Optional[dict[str, Any]] = None) -> bool:
+    """
+    Padroniza e atualiza o status de fluxo de uma licitação na tabela licitacoes.
+    Status suportados no fluxo JRBC TECH:
+      - 'radar' / 'pendente': Oportunidades captadas no Dashboard
+      - 'triado_servico': Oportunidades na aba Serviços (mão de obra pura)
+      - 'triado_misto': Oportunidades na aba Serviço com Produtos (peças + serviços)
+      - 'aprovado_disputa': Oportunidades precificadas com Stop-Loss e confirmadas para participação
+      - 'concluido': Disputas finalizadas
+    """
+    try:
+        dados: dict[str, Any] = {
+            "status_analise": status_analise,
+            "atualizado_em": datetime.now(timezone.utc).isoformat(),
+        }
+        if campos_extras:
+            dados.update(campos_extras)
+        get_client().table("licitacoes").update(dados).eq("id", licitacao_id).execute()
+        logger.info(f"✅ Licitação '{licitacao_id}' movida para status '{status_analise}'.")
+        return True
+    except Exception as exc:
+        logger.warning(f"Erro ao atualizar status da licitação '{licitacao_id}': {exc}")
+        return False
 
+
+def listar_licitacoes_por_status(status_analise: str, limite: int = 100) -> list[dict[str, Any]]:
+    """
+    Lista licitações filtradas pelo status do fluxo JRBC TECH.
+    """
+    try:
+        res = (
+            get_client()
+            .table("licitacoes")
+            .select("*, itens_licitacao(*)")
+            .eq("status_analise", status_analise)
+            .order("atualizado_em", desc=True)
+            .limit(limite)
+            .execute()
+        )
+        return res.data or []
+    except Exception as exc:
+        logger.warning(f"Erro ao listar licitações com status '{status_analise}': {exc}")
+        return []
+
+
+def aprovar_licitacao_disputa(
+    licitacao_id: str,
+    stop_loss_total: float,
+    itens: Optional[list[dict[str, Any]]] = None,
+    data_sessao: Optional[str] = None
+) -> bool:
+    """
+    Grava a aprovação definitiva de um certame para disputa:
+    - Atualiza status_analise = 'aprovado_disputa'
+    - Grava stop_loss e margem_lucro no cabeçalho
+    - Atualiza os stop_loss de cada item em itens_licitacao
+    """
+    try:
+        client = get_client()
+        dados_lic: dict[str, Any] = {
+            "status_analise": "aprovado_disputa",
+            "stop_loss": stop_loss_total,
+            "atualizado_em": datetime.now(timezone.utc).isoformat(),
+        }
+        if data_sessao:
+            dados_lic["data_hora_sessao"] = data_sessao
+
+        client.table("licitacoes").update(dados_lic).eq("id", licitacao_id).execute()
+
+        # Atualiza itens se fornecidos
+        if itens:
+            for it in itens:
+                it_id = it.get("id")
+                if not it_id:
+                    continue
+                preco_min = it.get("piso_preco") or it.get("stop_loss") or it.get("preco_minimo")
+                custo_u = it.get("custo_real") or it.get("custo_unitario")
+                margem = it.get("margem") or it.get("margem_minima_percent")
+                upd_item: dict[str, Any] = {}
+                if preco_min is not None:
+                    upd_item["preco_minimo"] = float(preco_min)
+                if custo_u is not None:
+                    upd_item["custo_unitario"] = float(custo_u)
+                if margem is not None:
+                    upd_item["margem_minima_percent"] = float(margem)
+                if upd_item:
+                    try:
+                        client.table("itens_licitacao").update(upd_item).eq("id", it_id).execute()
+                    except Exception as exc_it:
+                        logger.warning(f"Erro ao atualizar item {it_id}: {exc_it}")
+
+        logger.info(f"🎯 Licitação '{licitacao_id}' APROVADA PARA DISPUTA (Stop-loss: R$ {stop_loss_total:,.2f})")
+        return True
+    except Exception as exc:
+        logger.error(f"Erro ao aprovar licitação para disputa: {exc}")
+        return False

@@ -15,6 +15,7 @@ from __future__ import annotations
 from dotenv import load_dotenv
 load_dotenv() # Carrega SUPABASE_URL e SUPABASE_KEY do .env
 
+import datetime
 import logging
 import os
 import sys
@@ -27,6 +28,24 @@ from typing import Any, Callable, Optional, Dict, List
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, ttk
 
+# Patch defensivo para resolver AttributeError no CTkScrollableFrame (Python 3.14+ / Tkinter Linux)
+try:
+    from customtkinter.windows.widgets.ctk_scrollable_frame import CTkScrollableFrame
+
+    _original_check_scroll = CTkScrollableFrame._check_if_valid_scroll
+
+    def _safe_check_if_valid_scroll(self, widget):
+        try:
+            if isinstance(widget, str):
+                widget = self.nametowidget(widget)
+            return _original_check_scroll(self, widget)
+        except Exception:
+            return False
+
+    CTkScrollableFrame._check_if_valid_scroll = _safe_check_if_valid_scroll
+except Exception as _patch_err:
+    pass
+
 import csv
 import re
 
@@ -38,6 +57,16 @@ try:
     supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 except Exception as e:
     logging.warning(f"Não foi possível inicializar o cliente Supabase globalmente: {e}")
+
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if val is None or val == "":
+        return default
+    try:
+        if isinstance(val, (int, float)):
+            return float(val)
+        return float(str(val).replace("R$", "").replace(" ", "").replace(",", ".").strip())
+    except (ValueError, TypeError):
+        return default
 
 try:
     import pandas as pd
@@ -67,7 +96,20 @@ try:
         SeveridadeRisco,
     )
     from mercadolivre_gui import cotar_no_ml_gui
-    from browser_bot import BrowserBot, abrir_login_nativo
+    from browser_bot import (
+        BrowserBot,
+        abrir_login_nativo,
+        extrair_todos_itens_sala,
+        extrair_todos_itens_sala_cdp,
+    )
+    from disputa_manager import (
+        calcular_url_disputa_real,
+        verificar_cdp_ativo,
+        detectar_aba_disputa_ativa,
+        listar_abas_cdp,
+        garantir_chrome_com_cdp,
+        extrair_dados_aba_disputa,
+    )
     from pncp_client import (
         carregar_certame_pncp,
         extrair_params_pncp,
@@ -103,6 +145,7 @@ COR = {
     "bg_panel": "#0F172A",      # Painéis laterais e containers (Slate 900)
     "bg_card": "#1E293B",       # Superfície dos cards de oportunidades (Slate 800)
     "bg_input": "#0F172A",      # Campos de digitação e filtros
+    "bg_hover": "#2b2e35",      # Efeito hover em botões e cards
     "border": "#334155",        # Bordas elegantes e sutis (Slate 700)
     "border_focus": "#0EA5E9",  # Borda ativa em ciano
 
@@ -497,6 +540,13 @@ class PainelDashboard(ctk.CTkFrame):
         )
         self.btn_radar_diario.pack(side="right", padx=10)
 
+        self.btn_radar_telegram = ctk.CTkButton(
+            chrome_frame, text="📡 Radar Telegram (TO)", font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_blue"], text_color="#FFFFFF", hover_color="#2563EB", corner_radius=8,
+            command=self._executar_radar_telegram
+        )
+        self.btn_radar_telegram.pack(side="right", padx=10)
+
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
         cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
         cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
@@ -587,13 +637,35 @@ class PainelDashboard(ctk.CTkFrame):
         def worker():
             try:
                 import subprocess
-                subprocess.run(["python", "coletor_diario.py"], check=True)
+                import sys
+                subprocess.run([sys.executable, "coletor_diario.py"], check=True)
                 self.after(0, self.carregar_dados_dashboard)
                 self.after(0, lambda: messagebox.showinfo("Radar", "Varredura concluída com sucesso!"))
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("Erro", f"Erro no radar: {e}"))
+                err_msg = str(e)
+                self.after(0, lambda: messagebox.showerror("Erro", f"Erro no radar: {err_msg}"))
             finally:
                 self.after(0, lambda: self.btn_radar_diario.configure(text="🔄 Executar Radar do Dia", state="normal"))
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _executar_radar_telegram(self) -> None:
+        self.btn_radar_telegram.configure(text="⏳ Varrendo PNCP...", state="disabled")
+        def worker():
+            try:
+                from radar_telegram import varrer_pncp
+                encontrados = varrer_pncp(uf="TO", dias_atras=2)
+                qtd = len(encontrados)
+                self.after(0, self.carregar_dados_dashboard)
+                self.after(0, lambda: messagebox.showinfo(
+                    "Radar Telegram",
+                    f"Varredura concluída com sucesso!\n{qtd} oportunidade(s) analisada(s) e enviada(s) ao Telegram."
+                ))
+            except Exception as e:
+                err_msg = str(e)
+                self.after(0, lambda: messagebox.showerror("Erro", f"Erro no Radar Telegram: {err_msg}"))
+            finally:
+                self.after(0, lambda: self.btn_radar_telegram.configure(text="📡 Radar Telegram (TO)", state="normal"))
         import threading
         threading.Thread(target=worker, daemon=True).start()
 
@@ -606,37 +678,49 @@ class PainelDashboard(ctk.CTkFrame):
             frame_filtros, 
             values=["Todas", "Dispensa Eletrônica", "Pregão Eletrônico"], 
             state="readonly", 
-            width=160,
+            width=150,
             command=lambda e: self.aplicar_filtros()
         )
         self.combo_modalidade.set("Todas")
-        self.combo_modalidade.pack(side="left", padx=(0, 15), pady=6)
+        self.combo_modalidade.pack(side="left", padx=(0, 10), pady=6)
 
         ctk.CTkLabel(frame_filtros, text="UF / Região:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
         self.combo_uf = ctk.CTkComboBox(
             frame_filtros, 
             values=["TODOS", "AC", "AL", "AP", "AM", "BA", "CE", "DF", "ES", "GO", "MA", "MT", "MS", "MG", "PA", "PB", "PR", "PE", "PI", "RJ", "RN", "RS", "RO", "RR", "SC", "SP", "SE", "TO"],
             state="readonly", 
-            width=260,
+            width=100,
             command=lambda e: self.aplicar_filtros()
         )
         self.combo_uf.set("TODOS")
-        self.combo_uf.pack(side="left", padx=(0, 15), pady=6)
+        self.combo_uf.pack(side="left", padx=(0, 10), pady=6)
 
         ctk.CTkLabel(frame_filtros, text="Status:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
         self.combo_status = ctk.CTkComboBox(
             frame_filtros, 
             values=["Ativas (Pendente + Favorita)", "Apenas Favoritas", "Pendentes", "Descartadas", "Todas"], 
             state="readonly", 
-            width=200,
+            width=170,
             command=lambda e: self.aplicar_filtros()
         )
         self.combo_status.set("Ativas (Pendente + Favorita)")
-        self.combo_status.pack(side="left", padx=(0, 15), pady=6)
+        self.combo_status.pack(side="left", padx=(0, 10), pady=6)
+
+        ctk.CTkLabel(frame_filtros, text="Prazo:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(0, 4), pady=6)
+        self.combo_prazo = ctk.CTkComboBox(
+            frame_filtros, 
+            values=["Todos os Prazos", "🚨 Encerram Hoje", "⚡ Encerram Amanhã", "⏳ < 48 Horas", "📅 Em Aberto (Futuras)", "⌛ Encerradas"], 
+            state="readonly", 
+            width=160,
+            command=lambda e: self.aplicar_filtros()
+        )
+        self.combo_prazo.set("Todos os Prazos")
+        self.combo_prazo.pack(side="left", padx=(0, 10), pady=6)
         
         disable_mouse_scroll(self.combo_modalidade)
         disable_mouse_scroll(self.combo_uf)
         disable_mouse_scroll(self.combo_status)
+        disable_mouse_scroll(self.combo_prazo)
 
         btn_recarregar = ctk.CTkButton(
             frame_filtros, 
@@ -645,7 +729,7 @@ class PainelDashboard(ctk.CTkFrame):
             fg_color="#374151", 
             text_color="#f9fafb", 
             font=ctk.CTkFont(size=11, weight="bold"), 
-            width=100
+            width=90
         )
         btn_recarregar.pack(side="right", padx=10, pady=6)
 
@@ -680,6 +764,158 @@ class PainelDashboard(ctk.CTkFrame):
             import tkinter.messagebox as messagebox
             messagebox.showerror("Erro ao atualizar status", f"Falha ao persistir no Supabase:\n{str(e)}")
 
+    @staticmethod
+    def _formatar_data_iso(data_val: Any) -> tuple[Optional[datetime.datetime], str]:
+        if not data_val:
+            return None, "A consultar no edital"
+        import datetime
+        from datetime import date
+        
+        if isinstance(data_val, datetime.datetime):
+            dt_local = data_val.astimezone() if data_val.tzinfo else data_val
+            return dt_local, dt_local.strftime("%d/%m/%Y às %H:%M")
+        if isinstance(data_val, date):
+            dt = datetime.datetime.combine(data_val, datetime.time(hour=9, minute=0))
+            return dt, dt.strftime("%d/%m/%Y")
+
+        s = str(data_val).strip()
+        if not s or s.lower() in ["none", "null", ""]:
+            return None, "A consultar no edital"
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+
+        # 1. fromisoformat flexível (ISO 8601, timestamps UTC e offsets)
+        try:
+            dt = datetime.datetime.fromisoformat(s)
+            dt_local = dt.astimezone() if dt.tzinfo else dt
+            return dt_local, dt_local.strftime("%d/%m/%Y às %H:%M")
+        except Exception:
+            pass
+
+        # 2. Formatos comuns de data/hora
+        formatos = [
+            "%Y-%m-%d %H:%M:%S%z",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%d %H:%M",
+            "%Y-%m-%d",
+            "%d/%m/%Y %H:%M:%S%z",
+            "%d/%m/%Y %H:%M:%S",
+            "%d/%m/%Y %H:%M",
+            "%d/%m/%Y",
+        ]
+        for fmt in formatos:
+            try:
+                dt = datetime.datetime.strptime(s, fmt)
+                dt_local = dt.astimezone() if dt.tzinfo else dt
+                return dt_local, dt_local.strftime("%d/%m/%Y às %H:%M")
+            except Exception:
+                continue
+
+        # 3. Regex para extração inteligente caso venha texto ao redor
+        try:
+            import re
+            m_iso = re.search(r'(\d{4})-(\d{2})-(\d{2})', s)
+            if m_iso:
+                y, m, d = map(int, m_iso.groups())
+                dt = datetime.datetime(y, m, d, 9, 0)
+                return dt, dt.strftime("%d/%m/%Y")
+            m_br = re.search(r'(\d{2})/(\d{2})/(\d{4})', s)
+            if m_br:
+                d, m, y = map(int, m_br.groups())
+                dt = datetime.datetime(y, m, d, 9, 0)
+                return dt, dt.strftime("%d/%m/%Y")
+        except Exception:
+            pass
+
+        return None, s[:16]
+
+    @staticmethod
+    def _extrair_cronograma_licitacao(lic: dict) -> dict:
+        import datetime
+        from datetime import date, timedelta
+        raw_abertura = (
+            lic.get("data_abertura")
+            or lic.get("dataAberturaProposta")
+            or lic.get("data_inicio_recebimento_propostas")
+            or lic.get("data_hora_sessao")
+        )
+        raw_encerramento = (
+            lic.get("data_encerramento")
+            or lic.get("data_fim_proposta")
+            or lic.get("dataEncerramentoProposta")
+            or lic.get("data_fim_recebimento_propostas")
+        )
+
+        dt_abert, txt_abert = PainelDashboard._formatar_data_iso(raw_abertura)
+        dt_encerr, txt_encerr = PainelDashboard._formatar_data_iso(raw_encerramento)
+
+        dt_ref = dt_encerr or dt_abert
+
+        badge_texto = "📅 DATA NO EDITAL"
+        badge_bg = "#374151"
+        badge_fg = "#D1D5DB"
+        prazo_status = "sem_data"
+        dias_restantes = 999
+
+        if dt_ref:
+            agora = datetime.datetime.now().astimezone()
+            if dt_ref.tzinfo is not None:
+                dt_ref_local = dt_ref.astimezone()
+            else:
+                dt_ref_local = dt_ref.replace(tzinfo=agora.tzinfo)
+
+            hoje = agora.date()
+            amanha = hoje + timedelta(days=1)
+            data_ref = dt_ref_local.date()
+            diff_seg = (dt_ref_local - agora).total_seconds()
+            dias_restantes = (data_ref - hoje).days
+            hora_str = dt_ref_local.strftime("%H:%M")
+
+            if data_ref == hoje:
+                prazo_status = "hoje"
+                if diff_seg < 0:
+                    badge_texto = f"🚨 ENCERROU HOJE às {hora_str}"
+                    badge_bg = "#EF4444"
+                    badge_fg = "#FFFFFF"
+                else:
+                    badge_texto = f"🚨 ENCERRA HOJE às {hora_str}"
+                    badge_bg = "#EF4444"
+                    badge_fg = "#FFFFFF"
+            elif data_ref == amanha:
+                prazo_status = "amanha"
+                badge_texto = f"⚡ ENCERRA AMANHÃ às {hora_str}"
+                badge_bg = "#F59E0B"
+                badge_fg = "#080C14"
+            elif hoje < data_ref <= hoje + timedelta(days=2):
+                prazo_status = "48h"
+                badge_texto = f"⏳ EM {dias_restantes} DIAS ({dt_ref_local.strftime('%d/%m às %H:%M')})"
+                badge_bg = "#3B82F6"
+                badge_fg = "#FFFFFF"
+            elif data_ref > hoje:
+                prazo_status = "aberto"
+                badge_texto = f"📅 Em {dias_restantes} dias ({dt_ref_local.strftime('%d/%m')})"
+                badge_bg = "#10B981"
+                badge_fg = "#080C14"
+            else:
+                prazo_status = "encerrada"
+                badge_texto = "⌛ ENCERRADA"
+                badge_bg = "#374151"
+                badge_fg = "#9CA3AF"
+
+        return {
+            "txt_abertura": txt_abert,
+            "txt_encerramento": txt_encerr,
+            "dt_abertura": dt_abert,
+            "dt_encerramento": dt_encerr,
+            "dt_ref": dt_ref,
+            "badge_texto": badge_texto,
+            "badge_bg": badge_bg,
+            "badge_fg": badge_fg,
+            "prazo_status": prazo_status,
+            "dias_restantes": dias_restantes
+        }
+
     def aplicar_filtros(self) -> None:
         if not hasattr(self, "todas_licitacoes"):
             return
@@ -689,23 +925,20 @@ class PainelDashboard(ctk.CTkFrame):
         mod_selecionada = self.combo_modalidade.get()
         uf_selecionada = self.combo_uf.get()
         status_selecionado = self.combo_status.get()
+        prazo_selecionado = self.combo_prazo.get() if hasattr(self, "combo_prazo") and self.combo_prazo else "Todos os Prazos"
 
         for widget in self.scroll_lics.winfo_children():
             widget.destroy()
 
-        uf_vizinhos = ["TO", "GO", "PA", "MA", "BA", "MT", "PI"]
-        uf_norte = ["TO", "PA", "AP", "AM", "RO", "RR", "AC"]
-
         total_hoje = 0
         participando = 0
-        row_idx = 0
+        filtradas = []
 
         for lic in self.todas_licitacoes:
             if not isinstance(lic, dict): continue
-            modalidade_nome = lic.get("modalidade") or lic.get("tipo_processo") or ""
-            uf = (lic.get("uf") or "").upper().strip()
-            status = (lic.get("status_analise") or "PENDENTE").upper().strip()
-            objeto = (lic.get("objeto") or "Sem descrição")
+            modalidade_nome = str(lic.get("modalidade") or lic.get("tipo_processo") or "")
+            uf = str(lic.get("uf") or "").upper().strip()
+            status = str(lic.get("status_analise") or "PENDENTE").upper().strip()
 
             if mod_selecionada != "Todas" and mod_selecionada.lower() not in modalidade_nome.lower():
                 continue
@@ -713,104 +946,253 @@ class PainelDashboard(ctk.CTkFrame):
             if uf_selecionada != "TODOS" and uf != uf_selecionada:
                 continue
 
-            if status_selecionado == "Ativas (Pendente + Favorita)" and status not in ["PENDENTE", "FAVORITA"]:
+            if status_selecionado == "Ativas (Pendente + Favorita)" and status not in ["PENDENTE", "FAVORITA", "NOVA"]:
                 continue
             elif status_selecionado == "Apenas Favoritas" and status != "FAVORITA":
                 continue
-            elif status_selecionado == "Pendentes" and status != "PENDENTE":
+            elif status_selecionado == "Pendentes" and status not in ["PENDENTE", "NOVA"]:
                 continue
             elif status_selecionado == "Descartadas" and status != "DESCARTADA":
                 continue
 
-            sigla = "PE" if "Pregão" in modalidade_nome else ("Dispensa" if "Dispensa" in modalidade_nome else modalidade_nome)
-            numero = lic.get("numero_pregao", "S/N")  # type: ignore
-            uasg = lic.get("numero_uasg", "S/ UASG")  # type: ignore
-            pregao_formatado = f"{sigla} {numero} (UASG {uasg})"
-            
-            valor = float(lic.get('valor_estimado') or 0.0)  # type: ignore
-            
-            # CUIDADO COM PALAVRAS DE TI
-            ti_kws = ["tecnologia", "informática", "software", "computador", "rede", "suporte", "cabeamento", "notebook", "nobreak"]
-            is_ti = any(kw in objeto.lower() for kw in ti_kws)
+            crono = self._extrair_cronograma_licitacao(lic)
+            p_status = crono["prazo_status"]
+
+            if prazo_selecionado == "🚨 Encerram Hoje" and p_status != "hoje":
+                continue
+            elif prazo_selecionado == "⚡ Encerram Amanhã" and p_status != "amanha":
+                continue
+            elif prazo_selecionado == "⏳ < 48 Horas" and p_status not in ["hoje", "amanha", "48h"]:
+                continue
+            elif prazo_selecionado == "📅 Em Aberto (Futuras)" and p_status not in ["hoje", "amanha", "48h", "aberto"]:
+                continue
+            elif prazo_selecionado == "⌛ Encerradas" and p_status != "encerrada":
+                continue
 
             total_hoje += 1
             if status.lower() in ["proposta_enviada", "em_disputa", "ativo", "favorita"]:
                 participando += 1
 
-            if row_idx >= 30:
-                continue
+            filtradas.append((lic, crono))
 
-            row_idx += 1
+        # Ordenação inteligente: urgências primeiro (Hoje -> Amanhã -> <48h -> Futuras -> Sem data -> Encerradas)
+        def ordem_chave(item):
+            lic_dict, c = item
+            st = c["prazo_status"]
+            if st == "hoje":
+                return (0, c["dias_restantes"])
+            elif st == "amanha":
+                return (1, c["dias_restantes"])
+            elif st == "48h":
+                return (2, c["dias_restantes"])
+            elif st == "aberto":
+                return (3, c["dias_restantes"])
+            elif st == "sem_data":
+                return (4, 0)
+            else:
+                return (5, c["dias_restantes"])
+
+        filtradas.sort(key=ordem_chave)
+
+        import webbrowser
+
+        for lic, crono in filtradas[:35]:
+            modalidade_nome = str(lic.get("modalidade") or lic.get("tipo_processo") or "")
+            uf = str(lic.get("uf") or "").upper().strip()
+            objeto = str(lic.get("objeto") or "Sem descrição")
+            sigla = "PE" if "Pregão" in modalidade_nome else ("Dispensa" if "Dispensa" in modalidade_nome else modalidade_nome)
+            numero = str(lic.get("numero_pregao", "S/N"))
+            uasg = str(lic.get("numero_uasg", "S/ UASG"))
+            pregao_formatado = f"{sigla} {numero} (UASG {uasg})"
+            valor = _safe_float(lic.get('valor_estimado'))
+
+            ti_kws = ["tecnologia", "informática", "software", "computador", "rede", "suporte", "cabeamento", "notebook", "nobreak"]
+            is_ti = any(kw in objeto.lower() for kw in ti_kws)
 
             # --- Criação do Card ---
             card = ctk.CTkFrame(self.scroll_lics, fg_color=COR["bg_card"], corner_radius=10, border_width=1, border_color=COR["border"])
             card.pack(fill="x", pady=6, padx=4)
-            card.grid_columnconfigure(1, weight=1)
+            card.grid_columnconfigure(0, weight=1)
+            card.grid_columnconfigure(1, weight=0, minsize=210)
+
+            # --- COLUNA ESQUERDA (0): DADOS DA LICITAÇÃO ---
             
             # Linha 0: Badges
             badges_frame = ctk.CTkFrame(card, fg_color="transparent")
-            badges_frame.grid(row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 4))
-            
+            badges_frame.grid(row=0, column=0, sticky="w", padx=16, pady=(12, 6))
+
             # Badge Tipo
             tipo_bg = COR["accent_cyan"] if is_ti else COR["accent_purple"]
             tipo_text = " 🛠️ SERVIÇO " if is_ti else " 📦 PRODUTO "
             ctk.CTkLabel(badges_frame, text=tipo_text, fg_color=tipo_bg, text_color="#080C14", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
-            
+
             # Badge Modalidade
             mod_bg = COR["border"]
             mod_text = f" {sigla.upper()} "
             ctk.CTkLabel(badges_frame, text=mod_text, fg_color=mod_bg, text_color=COR["text_primary"], corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
 
-            # Prazo
-            import datetime
-            prazo = " ⏳ PRAZO: EM BREVE "
-            if lic.get("data_abertura"):  # type: ignore
-                try:
-                    dt = datetime.datetime.fromisoformat(lic.get("data_abertura").replace("Z", "+00:00"))  # type: ignore
-                    diff = dt - datetime.datetime.now(datetime.timezone.utc)
-                    if diff.total_seconds() > 0 and diff.total_seconds() < 48 * 3600:
-                        ctk.CTkLabel(badges_frame, text=" ⏳ < 48H ", fg_color=COR["accent_amber"], text_color="#080C14", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
-                except:
-                    pass
+            # Badge Portal
+            portal_nome = str(lic.get("portal") or "COMPRAS_GOV").replace("_", ".")
+            ctk.CTkLabel(badges_frame, text=f" 🏛️ {portal_nome} ", fg_color="#1E293B", text_color="#94A3B8", corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
 
-            # Linhas de Texto
-            orgao = f"Portal: {lic.get('portal', 'COMPRAS_GOV')} | [{uf}] {lic.get('orgao_nome', '')[:45]}"
-            ctk.CTkLabel(card, text=orgao, font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"]).grid(row=1, column=0, columnspan=2, sticky="w", padx=16)
-            ctk.CTkLabel(card, text=objeto[:100] + ("..." if len(objeto) > 100 else ""), font=ctk.CTkFont(size=12), text_color=COR["text_secondary"]).grid(row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(2, 12))
+            # Badge Urgência / Prazo Destaque
+            ctk.CTkLabel(badges_frame, text=f" {crono['badge_texto']} ", fg_color=crono["badge_bg"], text_color=crono["badge_fg"], corner_radius=5, font=ctk.CTkFont(size=10, weight="bold")).pack(side="left", padx=(0, 6))
 
-            # Lado Direito (Valores e Ações)
+            # Linha 1: Órgão e Pregão
+            orgao_nome_str = str(lic.get('orgao_nome', '') or '')[:50]
+            orgao = f"[{uf}] {orgao_nome_str} • {pregao_formatado}"
+            ctk.CTkLabel(card, text=orgao, font=ctk.CTkFont(size=14, weight="bold"), text_color=COR["text_primary"], anchor="w").grid(row=1, column=0, sticky="w", padx=16, pady=(0, 2))
+
+            # Linha 2: Objeto
+            objeto_trunc = objeto[:120] + ("..." if len(objeto) > 120 else "")
+            ctk.CTkLabel(card, text=objeto_trunc, font=ctk.CTkFont(size=12), text_color=COR["text_secondary"], anchor="w").grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
+
+            # Linha 3: Bloco de Datas e Cronograma (Destaque Visual)
+            crono_box = ctk.CTkFrame(card, fg_color="#0F172A", corner_radius=6, border_width=1, border_color="#1E293B")
+            crono_box.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 12))
+
+            cor_encerr = "#EF4444" if crono["prazo_status"] == "hoje" else ("#F59E0B" if crono["prazo_status"] == "amanha" else ("#38BDF8" if crono["prazo_status"] == "48h" else "#10B981"))
+            if crono["prazo_status"] in ["sem_data", "encerrada"]:
+                cor_encerr = "#9CA3AF"
+
+            ctk.CTkLabel(crono_box, text=f"⏰ Encerramento Proposta: {crono['txt_encerramento']}", font=ctk.CTkFont(size=11, weight="bold"), text_color=cor_encerr).pack(side="left", padx=(10, 16), pady=5)
+            ctk.CTkLabel(crono_box, text=f"🏛️ Abertura da Sessão / Disputa: {crono['txt_abertura']}", font=ctk.CTkFont(size=11), text_color="#E2E8F0").pack(side="left", padx=(0, 10), pady=5)
+
+            # --- COLUNA DIREITA (1): VALOR ESTIMADO E AÇÕES (Sem sobreposição) ---
+            val_frame = ctk.CTkFrame(card, fg_color="transparent")
+            val_frame.grid(row=0, column=1, rowspan=2, sticky="ne", padx=16, pady=(12, 0))
+            
+            ctk.CTkLabel(val_frame, text="VALOR ESTIMADO", font=ctk.CTkFont(size=10, weight="bold"), text_color="#9CA3AF").pack(anchor="e")
             val_str = f"R$ {valor:,.2f}"
-            ctk.CTkLabel(card, text=val_str, font=ctk.CTkFont(size=18, weight="bold"), text_color=COR["accent_green"]).grid(row=1, column=2, sticky="e", padx=16, rowspan=2)
+            ctk.CTkLabel(val_frame, text=val_str, font=ctk.CTkFont(size=17, weight="bold"), text_color=COR["accent_green"]).pack(anchor="e")
 
-            btn = ctk.CTkButton(card, text="⚡ Selecionar & Precificar", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_green"], text_color="#080C14", hover_color=COR["accent_cyan"], corner_radius=20, width=150)
-            btn.configure(command=lambda l=lic: self._selecionar_e_precificar(l))
-            btn.grid(row=2, column=2, sticky="e", padx=16, pady=(0, 12))
-                
+            acoes_frame = ctk.CTkFrame(card, fg_color="transparent")
+            acoes_frame.grid(row=2, column=1, rowspan=2, sticky="se", padx=16, pady=(0, 12))
+
+            # Botão Rápido 1: Mover p/ Serviços (CCMEI mão de obra pura)
+            btn_serv = ctk.CTkButton(
+                acoes_frame,
+                text="🛠️ Mover p/ Serviços",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color=COR["accent_cyan"],
+                text_color="#080C14",
+                hover_color="#06B6D4",
+                corner_radius=8,
+                width=175,
+                height=28,
+                command=lambda l=lic: self._mover_para_servicos(l),
+            )
+            btn_serv.pack(side="top", pady=(0, 3))
+
+            # Botão Rápido 2: Mover p/ Serviço + Produtos (misto: peças + serviços)
+            btn_misto = ctk.CTkButton(
+                acoes_frame,
+                text="📦 Mover p/ Serviço + Produtos",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color=COR["accent_purple"],
+                text_color="#FFFFFF",
+                hover_color="#7C3AED",
+                corner_radius=8,
+                width=175,
+                height=28,
+                command=lambda l=lic: self._mover_para_misto(l),
+            )
+            btn_misto.pack(side="top", pady=(0, 3))
+
+            # Botão Selecionar & Precificar
+            btn_prec = ctk.CTkButton(
+                acoes_frame,
+                text="⚡ Precificar em Editais",
+                font=ctk.CTkFont(size=11, weight="bold"),
+                fg_color=COR["bg_panel"],
+                text_color=COR["accent_green"],
+                border_width=1,
+                border_color=COR["accent_green"],
+                hover_color="#1E293B",
+                corner_radius=8,
+                width=175,
+                height=24,
+                command=lambda l=lic: self._selecionar_e_precificar(l),
+            )
+            btn_prec.pack(side="top", pady=(0, 3))
+
+            link_edital = str(lic.get("link_edital") or lic.get("link_sistema") or "")
+            if link_edital and link_edital.startswith("http"):
+                btn_link = ctk.CTkButton(
+                    acoes_frame,
+                    text="🌐 Acessar Edital Oficial",
+                    font=ctk.CTkFont(size=11),
+                    fg_color="transparent",
+                    text_color="#38BDF8",
+                    hover_color="#1E293B",
+                    corner_radius=8,
+                    width=175,
+                    height=20,
+                    command=lambda u=link_edital: webbrowser.open(u),
+                )
+                btn_link.pack(side="top")
+
+            # Linha 4: Resumo da IA se existir
+            resumo_ia = lic.get("resumo_ia") or lic.get("parecer_resumido")
+            if resumo_ia:
+                ia_box = ctk.CTkFrame(card, fg_color="#0F172A", corner_radius=6, border_width=1, border_color="#312E81")
+                ia_box.grid(row=4, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 10))
+                ctk.CTkLabel(
+                    ia_box,
+                    text=f"🤖 Resumo IA: {str(resumo_ia)[:150]}...",
+                    font=ctk.CTkFont(size=11),
+                    text_color="#C7D2FE",
+                    anchor="w",
+                ).pack(side="left", padx=10, pady=4)
+
         self.card_radar_pncp.atualizar(str(total_hoje))
         self.card_servicos_ti.atualizar(str(participando))
 
+    def _mover_para_servicos(self, lic: dict) -> None:
+        lic_id = lic.get("id")
+        if not lic_id: return
+        import threading
+        def worker():
+            try:
+                from supabase_client import atualizar_status_licitacao
+                atualizar_status_licitacao(str(lic_id), "triado_servico")
+                self.after(0, lambda: messagebox.showinfo("Triagem CCMEI", "✅ Oportunidade movida para a aba '🛠️ Serviços'!"))
+                self.after(0, self.carregar_licitacoes_nuvem)
+            except Exception as e:
+                logger.warning(f"Erro ao mover para servicos: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _mover_para_misto(self, lic: dict) -> None:
+        lic_id = lic.get("id")
+        if not lic_id: return
+        import threading
+        def worker():
+            try:
+                from supabase_client import atualizar_status_licitacao
+                atualizar_status_licitacao(str(lic_id), "triado_misto")
+                self.after(0, lambda: messagebox.showinfo("Triagem CCMEI", "✅ Oportunidade movida para a aba '📦 Serviço com Produtos'!"))
+                self.after(0, self.carregar_licitacoes_nuvem)
+            except Exception as e:
+                logger.warning(f"Erro ao mover para misto: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
     def _selecionar_e_precificar(self, lic):
-        link = lic.get("link_sistema", "")
-        # Trocar aba e usar Entrada Rápida do Painel Editais
-        self.app.selecionar_aba("📄  Editais & Custos")
-        # Encontra a instância do PainelEditais
-        for tab in self.app.tabview.winfo_children():
-            # A view frame is nested inside the tabview, wait let's just use self.app.painel_editais directly if possible.
-            # But the tabview children aren't directly the classes.
-            # We can find the painel_editais easily by looking for txt_entrada_rapida.
-            for child in tab.winfo_children():
-                if hasattr(child, "txt_entrada_rapida"):
-                    # Injeta o link lá e chama carregar direto
-                    child.txt_entrada_rapida.delete(0, "end")
-                    child.txt_entrada_rapida.insert(0, link)
-                    child._carregar_direto()
-                    return
+        link = lic.get("link_sistema") or lic.get("link_edital") or lic.get("url_sala_disputa") or ""
+        # Tenta alternar para a aba 'Editais & Custos' usando o container correto
+        if hasattr(self.app, "tab_container") and hasattr(self.app.tab_container, "set"):
+            self.app.tab_container.set("Editais & Custos")
+        elif hasattr(self.app, "mudar_aba"):
+            self.app.mudar_aba("Editais & Custos")
+        elif hasattr(self.app, "selecionar_aba"):
+            self.app.selecionar_aba("Editais & Custos")
         
-        # Fallback if we have app.painel_editais (which we do in main but in app_gui maybe not)
         if hasattr(self.app, "painel_editais"):
-            self.app.painel_editais.txt_entrada_rapida.delete(0, "end")
-            self.app.painel_editais.txt_entrada_rapida.insert(0, link)
-            self.app.painel_editais._carregar_direto()
+            pe = self.app.painel_editais
+            if hasattr(pe, "txt_entrada_rapida"):
+                pe.txt_entrada_rapida.delete(0, "end")
+                pe.txt_entrada_rapida.insert(0, link)
+                if hasattr(pe, "_carregar_direto"):
+                    pe._carregar_direto()
 
     def _on_tree_lics_double_click(self, event: Any) -> None:
         item = self.tree_lics.selection()
@@ -910,7 +1292,11 @@ class PainelDashboard(ctk.CTkFrame):
         # 1. Carrega do cache instantaneamente na MainThread
         cache = cache_manager.carregar_cache()
         if "todas_licitacoes" in cache:
-            self.todas_licitacoes = cache["todas_licitacoes"]
+            try:
+                from radar_telegram import validar_edital_jrbc
+                self.todas_licitacoes = [lic for lic in cache["todas_licitacoes"] if isinstance(lic, dict) and validar_edital_jrbc(str(lic.get("objeto") or ""))]
+            except Exception:
+                self.todas_licitacoes = cache["todas_licitacoes"]
             self.aplicar_filtros()
             
         def worker():
@@ -933,13 +1319,18 @@ class PainelDashboard(ctk.CTkFrame):
                     .limit(200)\
                     .execute()
                     
-                self.todas_licitacoes = resposta.data or []
+                raw_data = resposta.data or []
+                try:
+                    from radar_telegram import validar_edital_jrbc
+                    self.todas_licitacoes = [lic for lic in raw_data if isinstance(lic, dict) and validar_edital_jrbc(str(lic.get("objeto") or ""))]
+                except Exception:
+                    self.todas_licitacoes = raw_data
                 
-                # 2. Salva o novo cache
+                # 2. Salva o novo cache saneado
                 cache_manager.salvar_cache("todas_licitacoes", self.todas_licitacoes)
                 
                 self.after(0, self.aplicar_filtros)
-                logging.info(f"[GUI] {len(self.todas_licitacoes)} licitações carregadas com sucesso do Supabase!")
+                logging.info(f"[GUI] {len(self.todas_licitacoes)} licitações válidas carregadas com sucesso do Supabase!")
                 
             except Exception as e:
                 logging.error(f"[GUI] Erro ao carregar dados do Supabase no Dashboard: {e}")
@@ -956,11 +1347,11 @@ class PainelEditais(ctk.CTkFrame):
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(4, weight=1)
 
         import tkinter as tk
 
-        # 0. Entrada Rápida
+        # 0. Entrada Rápida (Google Drive, PNCP, Comprasnet ou Pasta)
         card_entrada = CardFrame(self)
         card_entrada.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
         card_entrada.grid_columnconfigure(0, weight=1)
@@ -969,12 +1360,23 @@ class PainelEditais(ctk.CTkFrame):
         f_entrada.pack(fill="x", padx=16, pady=10)
         f_entrada.grid_columnconfigure(0, weight=1)
         
-        self.txt_entrada_rapida = ctk.CTkEntry(f_entrada, placeholder_text="Cole o Link do PNCP, Processo ou UASG/Pregão...")
+        self.txt_entrada_rapida = ctk.CTkEntry(
+            f_entrada,
+            placeholder_text="Cole o Link da Pasta do Google Drive, PNCP, Comprasnet ou Pasta do Processo...",
+            font=ctk.CTkFont(size=12)
+        )
         self.txt_entrada_rapida.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.txt_entrada_rapida.bind("<Return>", lambda e: self._carregar_direto())
         self.txt_entrada_rapida.bind("<Control-v>", lambda e: self.after(10, lambda: None))
         
-        self.btn_carregar_direto = ctk.CTkButton(f_entrada, text="⚡ Carregar Direto", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_cyan"], text_color="#080C14", command=self._carregar_direto)
+        self.btn_carregar_direto = ctk.CTkButton(
+            f_entrada,
+            text="⚡ Carregar do Drive / PNCP",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color=COR["accent_cyan"],
+            text_color="#080C14",
+            command=self._carregar_direto,
+        )
         self.btn_carregar_direto.grid(row=0, column=1)
 
         # 1. Seletor de Certame na Nuvem
@@ -996,7 +1398,7 @@ class PainelEditais(ctk.CTkFrame):
         self.cmb_certames = ctk.CTkComboBox(
             card_seletor,
             values=valores_iniciais,
-            command=self._on_certame_selecionado,
+            command=self._on_selecionar_licitacao,
             width=300
         )
         self.cmb_certames.grid(row=0, column=1, padx=8, pady=10, sticky="ew")
@@ -1006,11 +1408,98 @@ class PainelEditais(ctk.CTkFrame):
         
         if "todas_licitacoes" in cache and valores_iniciais and valores_iniciais[0] not in ("(Nenhum pregão carregado)", "(Carregando...)"):
             self.cmb_certames.set(valores_iniciais[0])
-            self.after(50, lambda: self._on_certame_selecionado(valores_iniciais[0]))
+            self.after(50, lambda: self._on_selecionar_licitacao(valores_iniciais[0]))
 
-        # 2. Barra de Regras de Lances
+        # 2. Card de Vistoria Prévia & Parecer da IA (Gemini - Lei 14.133/2021)
+        self.card_vistoria = CardFrame(self)
+        self.card_vistoria.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
+        self.card_vistoria.grid_columnconfigure(0, weight=1)
+
+        f_vistoria_top = ctk.CTkFrame(self.card_vistoria, fg_color="transparent")
+        f_vistoria_top.pack(fill="x", padx=16, pady=(10, 4))
+        f_vistoria_top.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            f_vistoria_top,
+            text="🤖  Vistoria Prévia & Parecer da IA (Gemini):",
+            font=ctk.CTkFont(size=13, weight="bold"),
+            text_color=COR["accent_cyan"],
+        ).grid(row=0, column=0, sticky="w")
+
+        self.lbl_vistoria_badge = ctk.CTkLabel(
+            f_vistoria_top,
+            text="🔍 AGUARDANDO VISTORIA",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1E293B",
+            text_color=COR["accent_cyan"],
+            corner_radius=6,
+            padx=10,
+            pady=3,
+        )
+        self.lbl_vistoria_badge.grid(row=0, column=1, sticky="w", padx=10)
+
+        self.btn_reavaliar_ia = ctk.CTkButton(
+            f_vistoria_top,
+            text="👁️ Vistoria IA",
+            width=110,
+            height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COR["accent_purple"],
+            text_color="#FFFFFF",
+            command=self._executar_vistoria_ia_atual,
+        )
+        self.btn_reavaliar_ia.grid(row=0, column=2, padx=(0, 6))
+
+        self.btn_abrir_drive = ctk.CTkButton(
+            f_vistoria_top,
+            text="📁 Abrir no Drive",
+            width=120,
+            height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#334155",
+            text_color="#FFFFFF",
+            command=self._abrir_pasta_drive_atual,
+            state="disabled",
+        )
+        self.btn_abrir_drive.grid(row=0, column=3)
+
+        self.lbl_vistoria_parecer = ctk.CTkLabel(
+            self.card_vistoria,
+            text="Cole o link do Google Drive, PNCP ou pasta acima para a IA inspecionar os itens, estimar custos e comparar com a disputa ao vivo.",
+            font=ctk.CTkFont(size=12),
+            text_color=COR["text_primary"],
+            justify="left",
+            wraplength=950,
+            anchor="w",
+        )
+        self.lbl_vistoria_parecer.pack(fill="x", padx=16, pady=(2, 4))
+
+        class _TxtParecerProxy:
+            def __init__(self, label: ctk.CTkLabel):
+                self._lbl = label
+            def delete(self, *args, **kwargs):
+                self._lbl.configure(text="")
+            def insert(self, index, text, *args, **kwargs):
+                self._lbl.configure(text=str(text))
+            def get(self, *args, **kwargs):
+                return self._lbl.cget("text")
+
+        self.txt_parecer = _TxtParecerProxy(self.lbl_vistoria_parecer)
+
+        self.lbl_vistoria_pontos = ctk.CTkLabel(
+            self.card_vistoria,
+            text="• Conforme Lei 14.133/2021 (Art. 59 §4º), lances abaixo de 50% do valor orçado têm presunção de inexequibilidade.",
+            font=ctk.CTkFont(size=11, slant="italic"),
+            text_color=COR["accent_amber"],
+            justify="left",
+            wraplength=950,
+            anchor="w",
+        )
+        self.lbl_vistoria_pontos.pack(fill="x", padx=16, pady=(0, 10))
+
+        # 3. Barra de Regras de Lances
         card_regras = CardFrame(self)
-        card_regras.grid(row=2, column=0, sticky="ew", padx=0, pady=(0, 8))
+        card_regras.grid(row=3, column=0, sticky="ew", padx=0, pady=(0, 8))
         
         ctk.CTkLabel(card_regras, text="⚖️ Regra de Lance:", font=ctk.CTkFont(size=12, weight="bold")).pack(side="left", padx=(16, 8), pady=10)
         
@@ -1025,8 +1514,21 @@ class PainelEditais(ctk.CTkFrame):
         self.txt_intervalo.insert(0, "0.01")
         self.txt_intervalo.pack(side="left", padx=8)
 
+        self.btn_aprovar_participacao = ctk.CTkButton(
+            card_regras,
+            text="✅ Aceitar / Aprovar Participação",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#10B981",
+            hover_color="#059669",
+            text_color="#FFFFFF",
+            corner_radius=8,
+            height=34,
+            command=self._aprovar_participacao_disputa,
+        )
+        self.btn_aprovar_participacao.pack(side="right", padx=(8, 12), pady=10)
+
         btn_salvar_regra = ctk.CTkButton(card_regras, text="💾 Salvar Regra no Supabase", fg_color=COR["accent_green"], text_color="#000000", command=self._salvar_regras_supabase)
-        btn_salvar_regra.pack(side="right", padx=(8, 16), pady=10)
+        btn_salvar_regra.pack(side="right", padx=8, pady=10)
         
         btn_ir_disputa = ctk.CTkButton(
             card_regras,
@@ -1049,9 +1551,9 @@ class PainelEditais(ctk.CTkFrame):
         )
         btn_preencher_proposta.pack(side="right", padx=8, pady=10)
 
-        # 3. Tabela de Itens & Stop Loss
+        # 4. Tabela de Itens & Stop Loss
         card_itens = CardFrame(self)
-        card_itens.grid(row=3, column=0, sticky="nsew", padx=0, pady=0)
+        card_itens.grid(row=4, column=0, sticky="nsew", padx=0, pady=0)
         card_itens.grid_rowconfigure(1, weight=1)
         card_itens.grid_columnconfigure(0, weight=1)
 
@@ -1124,7 +1626,12 @@ class PainelEditais(ctk.CTkFrame):
                 key = os.getenv("SUPABASE_KEY") or ""
                 sb = create_client(url, key)
                 res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
-                self.dados_nuvem = res.data
+                raw_data = res.data or []
+                try:
+                    from radar_telegram import validar_edital_jrbc
+                    self.dados_nuvem = [lic for lic in raw_data if isinstance(lic, dict) and validar_edital_jrbc(str(lic.get("objeto") or ""))]
+                except Exception:
+                    self.dados_nuvem = raw_data
             except Exception as e:
                 self.dados_nuvem = []
                 
@@ -1150,112 +1657,297 @@ class PainelEditais(ctk.CTkFrame):
         self.cmb_certames.configure(values=lista_chaves)
         if lista_chaves:
             self.cmb_certames.set(lista_chaves[0])
-            self._on_certame_selecionado(lista_chaves[0])
+            self._on_selecionar_licitacao(lista_chaves[0])
 
-    def _on_certame_selecionado(self, escolha: str) -> None:
-        idx = self.cmb_certames._values.index(escolha) if escolha in self.cmb_certames._values else -1
-        if idx >= 0 and hasattr(self, "dados_nuvem"):
-            lic = self.dados_nuvem[idx]
-            self.licitacao_ativa = lic
-            
-            # Extrair CNPJ, Ano, Sequencial e carregar itens reais do PNCP
-            def worker():
-                link = lic.get("link_sistema", "")  # type: ignore
-                if "pncp.gov.br" in link:
-                    try:
-                        from pncp_client import extrair_params_pncp, carregar_certame_pncp
-                        cnpj, ano, seq = extrair_params_pncp(link)
-                        if cnpj and ano and seq:
-                            self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                            self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando itens no PNCP...", "", "", "", "", "", "")))
-                            
-                            resultado = carregar_certame_pncp(link)
-                            self.after(0, lambda: self._exibir_itens_pncp(lic, resultado))
-                            return
-                    except Exception as e:
-                        import logging
-                        logging.error(f"Erro ao buscar PNCP: {e}")
-                
-                # Fallback se falhar ou não for PNCP
-                self.after(0, lambda: self._exibir_itens(lic))  # type: ignore
-
-            import threading
-            threading.Thread(target=worker, daemon=True).start()
-
-    def _exibir_itens_pncp(self, lic, resultado):
+    def _exibir_itens_completos(self, lic: dict, itens: list[dict], vistoria: Optional[dict] = None) -> None:
         for row in self.tree_itens.get_children():
             self.tree_itens.delete(row)
-        
-        if not resultado.itens:
-            self._exibir_itens(lic)
-            return
 
         itens_para_sessao = []
-        for item in resultado.itens:
-            valor = item.valor_referencia or 0.0
-            custo_real = item.custo_real or valor * 0.5
-            piso = item.piso_preco or valor * 0.7
-            margem = ((valor - piso) / valor * 100) if valor > 0 else 0.0
+        for idx, item in enumerate(itens, 1):
+            if isinstance(item, dict):
+                num = item.get("numero_item") or idx
+                desc = item.get("descricao") or f"Item {num}"
+                qtd = _safe_float(item.get("quantidade"), default=1.0)
+                unidade = str(item.get("unidade_medida") or "UN").upper()
+                val_ref = _safe_float(item.get("valor_referencia"))
+                custo_real = _safe_float(item.get("custo_real"))
+                piso = _safe_float(item.get("stop_loss") or item.get("piso_preco"))
+                margem = _safe_float(item.get("margem"), default=(((val_ref - piso) / val_ref * 100) if val_ref > 0 and piso > 0 else 0.0))
+            else:
+                num = getattr(item, "numero_item", idx)
+                desc = getattr(item, "descricao", f"Item {num}")
+                qtd = _safe_float(getattr(item, "quantidade", 1.0), default=1.0)
+                unidade = str(getattr(item, "unidade_medida", "UN") or "UN").upper()
+                val_ref = _safe_float(getattr(item, "valor_referencia", 0.0))
+                custo_real = _safe_float(getattr(item, "custo_real", 0.0))
+                piso = _safe_float(getattr(item, "stop_loss", 0.0) or getattr(item, "piso_preco", 0.0))
+                margem = _safe_float(getattr(item, "margem", 0.0), default=(((val_ref - piso) / val_ref * 100) if val_ref > 0 and piso > 0 else 0.0))
 
-            val_ref_str = f"R$ {valor:,.2f}"
-            custo_str = f"R$ {custo_real:,.2f}"
-            piso_str = f"R$ {piso:,.2f}"
-            margem_str = f"{margem:.1f}%"
+            val_ref_str = f"R$ {val_ref:,.2f}" if val_ref > 0 else "R$ 0,00 (Sigiloso)"
+            custo_str = f"R$ {custo_real:,.2f}" if custo_real > 0 else "—"
+            piso_str = f"R$ {piso:,.2f}" if piso > 0 else "—"
+            margem_str = f"{margem:.1f}%" if margem > 0 else "0.0%"
 
+            item_id = f"{lic.get('id', 'item')}_{num}"
             self.tree_itens.insert(
                 "",
                 "end",
-                iid=f"{lic.get('id')}_{item.numero_item}",  # type: ignore
+                iid=item_id,
                 values=(
-                    str(item.numero_item),
-                    item.descricao[:100],
-                    str(item.quantidade),
-                    item.unidade_medida,
+                    str(num),
+                    desc[:120],
+                    f"{qtd:g}",
+                    unidade,
                     val_ref_str,
                     custo_str,
                     margem_str,
                     piso_str,
                 ),
-                tags=("evenrow",)
+                tags=("evenrow" if idx % 2 == 0 else "oddrow",)
             )
+
             itens_para_sessao.append({
-                "numero_item": item.numero_item,
-                "descricao": item.descricao
+                "numero_item": num,
+                "descricao": desc,
+                "quantidade": qtd,
+                "unidade_medida": unidade,
+                "valor_referencia": val_ref,
+                "custo_unitario": custo_real,
+                "preco_minimo": piso,
+                "piso_seguro": piso,
             })
-            
+
+        self.licitacao_ativa = lic
+        self.itens_carregados = itens_para_sessao
         if hasattr(self.app, "definir_licitacao_ativa"):
             self.app.definir_licitacao_ativa(lic, itens_para_sessao)
 
-    def _exibir_itens(self, lic: dict) -> None:
-        for row in self.tree_itens.get_children():
-            self.tree_itens.delete(row)
-            
-        valor = float(lic.get("valor_estimado") or 0.0)  # type: ignore
-        custo_real = float(lic.get("custo_real") or valor * 0.5)  # type: ignore
-        piso = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
-        margem = ((valor - piso) / valor * 100) if valor > 0 else 0.0
+    def _abrir_pasta_drive_atual(self) -> None:
+        caminho = getattr(self, "pasta_drive_ativa", "")
+        if caminho:
+            from integrador_drive_ia import abrir_pasta_no_sistema
+            abrir_pasta_no_sistema(caminho)
+        else:
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("Drive", "Nenhuma pasta local do Drive associada a este certame.")
 
-        val_ref_str = f"R$ {valor:,.2f}"
-        custo_str = f"R$ {custo_real:,.2f}"
-        piso_str = f"R$ {piso:,.2f}"
-        margem_str = f"{margem:.1f}%"
+    def _executar_vistoria_ia_atual(self) -> None:
+        if not hasattr(self, "licitacao_ativa") or not self.licitacao_ativa:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Selecione ou carregue um certame primeiro.")
+            return
 
-        self.tree_itens.insert(
-            "",
-            "end",
-            iid=lic.get("id"),  # type: ignore
-            values=(
-                "1",
-                lic.get("objeto", "")[:100],  # type: ignore
-                "1",
-                "UN",
-                val_ref_str,
-                custo_str,
-                margem_str,
-                piso_str,
-            ),
-            tags=("evenrow",)
+        if hasattr(self, "txt_parecer"):
+            try:
+                self.txt_parecer.delete("1.0", "end")
+                self.txt_parecer.insert("1.0", "Carregando vistoria técnica do edital...")
+            except Exception:
+                pass
+        if hasattr(self, "lbl_vistoria_parecer"):
+            self.lbl_vistoria_parecer.configure(text="Carregando vistoria técnica do edital...")
+        if hasattr(self, "lbl_vistoria_pontos"):
+            self.lbl_vistoria_pontos.configure(text="")
+        self.lbl_vistoria_badge.configure(
+            text="⏳ REAVALIANDO COM GEMINI...",
+            fg_color="#3B82F6",
+            text_color="#FFFFFF"
         )
+
+        def worker():
+            from integrador_drive_ia import realizar_vistoria_previa_gemini
+            itens = getattr(self, "itens_carregados", [])
+            dados = {
+                "licitacao": self.licitacao_ativa,
+                "nome_pasta": self.cmb_certames.get(),
+            }
+            vistoria = realizar_vistoria_previa_gemini(dados, itens)
+            itens_finais = vistoria.get("itens_atualizados") or itens
+
+            def atualizar():
+                if isinstance(self.licitacao_ativa, dict):
+                    self._exibir_itens_completos(self.licitacao_ativa, itens_finais, vistoria)
+                badge_txt = vistoria.get("badge", "🟢 VISTORIA CONCLUÍDA")
+                bg_color = "#10B981" if "VIÁVEL" in badge_txt or "APROVADA" in badge_txt else "#F59E0B"
+                self.lbl_vistoria_badge.configure(text=badge_txt, fg_color=bg_color, text_color="#000000")
+                parecer_txt = vistoria.get("parecer_resumido", "")
+                self.lbl_vistoria_parecer.configure(text=parecer_txt)
+                if hasattr(self, "txt_parecer"):
+                    try:
+                        self.txt_parecer.delete("1.0", "end")
+                        self.txt_parecer.insert("1.0", parecer_txt)
+                    except Exception:
+                        pass
+                pontos = vistoria.get("pontos_atencao", [])
+                self.lbl_vistoria_pontos.configure(text="\n".join(f"• {p}" for p in pontos))
+
+            self.after(0, atualizar)
+
+        import threading
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_selecionar_licitacao(self, escolha: str) -> None:
+        """Disparado imediatamente quando o usuário seleciona um certame no menu suspenso."""
+        # 1. Limpa imediatamente o parecer anterior para evitar resíduo visual de outro certame
+        self.txt_parecer.delete("1.0", "end")
+        self.txt_parecer.insert("1.0", "Carregando vistoria técnica do edital...")
+        if hasattr(self, "lbl_vistoria_parecer"):
+            self.lbl_vistoria_parecer.configure(text="Carregando vistoria técnica do edital...")
+        if hasattr(self, "lbl_vistoria_pontos"):
+            self.lbl_vistoria_pontos.configure(text="")
+        if hasattr(self, "lbl_vistoria_badge"):
+            self.lbl_vistoria_badge.configure(
+                text="⏳ CARREGANDO VISTORIA TÉCNICA...",
+                fg_color="#3B82F6",
+                text_color="#FFFFFF"
+            )
+
+        # 2. Reseta a tabela de itens visualmente
+        if hasattr(self, "tree_itens"):
+            try:
+                for row in self.tree_itens.get_children():
+                    self.tree_itens.delete(row)
+                self.tree_itens.insert("", "end", values=("⏳", "Carregando dados do certame...", "", "", "", "", "", ""))
+            except Exception:
+                pass
+
+        # 3. Localiza a licitação correspondente
+        valores = []
+        try:
+            valores = self.cmb_certames.cget("values")
+        except Exception:
+            pass
+        if not valores:
+            valores = getattr(self.cmb_certames, "_values", [])
+
+        idx = -1
+        if escolha in valores:
+            idx = valores.index(escolha)
+        elif hasattr(self, "dados_nuvem"):
+            for i, d in enumerate(self.dados_nuvem):
+                if isinstance(d, dict):
+                    orgao = str(d.get("orgao_nome") or "")[:20]
+                    uf = str(d.get("uf") or "")
+                    pregao = str(d.get("numero_pregao") or "")
+                    rep = f"[{uf}] {orgao} - {pregao}"
+                    if rep == escolha:
+                        idx = i
+                        break
+
+        if idx >= 0 and hasattr(self, "dados_nuvem"):
+            lic_raw = self.dados_nuvem[idx]
+            if not isinstance(lic_raw, dict):
+                return
+            lic: dict[str, Any] = dict(lic_raw)
+            self.licitacao_ativa = lic
+
+            def worker():
+                from integrador_drive_ia import (
+                    buscar_pasta_local_drive,
+                    carregar_dados_pasta_drive,
+                    realizar_vistoria_previa_gemini,
+                )
+
+                orgao = lic.get("orgao_nome", "")
+                pregao = lic.get("numero_pregao", "")
+                link = lic.get("link_sistema", "")
+
+                # 1. Tenta achar pasta no Drive local
+                pasta_drive = buscar_pasta_local_drive(pregao) or buscar_pasta_local_drive(orgao[:20])
+                dados_drive = carregar_dados_pasta_drive(pasta_drive) if pasta_drive else None
+
+                itens = []
+                if dados_drive and dados_drive.get("itens"):
+                    itens = dados_drive["itens"]
+                    self.pasta_drive_ativa = str(pasta_drive)
+                    self.after(0, lambda: self.btn_abrir_drive.configure(state="normal"))
+                else:
+                    self.pasta_drive_ativa = ""
+                    self.after(0, lambda: self.btn_abrir_drive.configure(state="disabled"))
+
+                # 2. Se não achou itens no Drive, busca no PNCP
+                if not itens and "pncp.gov.br" in link:
+                    try:
+                        from pncp_client import carregar_certame_pncp
+                        res_pncp = carregar_certame_pncp(link)
+                        if res_pncp and hasattr(res_pncp, "itens"):
+                            for it in res_pncp.itens:
+                                itens.append({
+                                    "numero_item": getattr(it, "numero_item", 1),
+                                    "descricao": getattr(it, "descricao", ""),
+                                    "quantidade": float(getattr(it, "quantidade", 1.0) or 1.0),
+                                    "unidade_medida": getattr(it, "unidade_medida", "UN") or "UN",
+                                    "valor_referencia": float(getattr(it, "valor_referencia", 0.0) or 0.0),
+                                    "custo_real": float(getattr(it, "custo_real", 0.0) or 0.0),
+                                    "piso_preco": float(getattr(it, "piso_preco", 0.0) or 0.0),
+                                })
+                    except Exception as e:
+                        logger.error(f"Erro ao buscar PNCP: {e}")
+
+                # 3. Fallback: item único do objeto
+                if not itens:
+                    val_est = _safe_float(lic.get("valor_estimado"))
+                    itens = [{
+                        "numero_item": 1,
+                        "descricao": lic.get("objeto", "Objeto do certame"),
+                        "quantidade": 1.0,
+                        "unidade_medida": "UN",
+                        "valor_referencia": val_est,
+                        "custo_real": val_est * 0.5 if val_est > 0 else 0.0,
+                        "piso_preco": val_est * 0.7 if val_est > 0 else 0.0,
+                    }]
+
+                # Exibe itens imediatamente
+                self.after(0, lambda: self._exibir_itens_completos(lic, itens))
+
+                # Dispara Vistoria Prévia da IA em background
+                self.after(0, lambda: self.lbl_vistoria_badge.configure(
+                    text="⏳ EXECUTANDO VISTORIA IA (GEMINI)...",
+                    fg_color="#3B82F6",
+                    text_color="#FFFFFF"
+                ))
+
+                ctx_processo = dados_drive or {"licitacao": lic, "nome_pasta": escolha}
+                vistoria = realizar_vistoria_previa_gemini(ctx_processo, itens)
+                itens_finais = vistoria.get("itens_atualizados") or itens
+
+                def atualizar_vistoria_ui():
+                    self._exibir_itens_completos(lic, itens_finais, vistoria)
+                    badge_txt = vistoria.get("badge", "🟢 VISTORIA CONCLUÍDA")
+                    bg_color = "#10B981" if "VIÁVEL" in badge_txt or "APROVADA" in badge_txt else "#F59E0B"
+                    self.lbl_vistoria_badge.configure(text=badge_txt, fg_color=bg_color, text_color="#000000")
+                    parecer_txt = vistoria.get("parecer_resumido", "")
+                    self.lbl_vistoria_parecer.configure(text=parecer_txt)
+                    if hasattr(self, "txt_parecer"):
+                        try:
+                            self.txt_parecer.delete("1.0", "end")
+                            self.txt_parecer.insert("1.0", parecer_txt)
+                        except Exception:
+                            pass
+                    pontos = vistoria.get("pontos_atencao", [])
+                    self.lbl_vistoria_pontos.configure(text="\n".join(f"• {p}" for p in pontos))
+
+                self.after(0, atualizar_vistoria_ui)
+
+            import threading
+            threading.Thread(target=worker, daemon=True).start()
+
+    _on_certame_selecionado = _on_selecionar_licitacao
+
+    def _exibir_itens_pncp(self, lic: dict, resultado: Any) -> None:
+        self._exibir_itens_completos(lic, getattr(resultado, "itens", []) if hasattr(resultado, "itens") else [])
+
+    def _exibir_itens(self, lic: dict) -> None:
+        val = _safe_float(lic.get("valor_estimado"))
+        self._exibir_itens_completos(lic, [{
+            "numero_item": 1,
+            "descricao": lic.get("objeto", "Item principal"),
+            "quantidade": 1.0,
+            "unidade_medida": "UN",
+            "valor_referencia": val,
+            "custo_real": _safe_float(lic.get("custo_real"), default=(val * 0.5 if val > 0 else 0.0)),
+            "piso_preco": _safe_float(lic.get("piso_seguro"), default=(val * 0.7 if val > 0 else 0.0)),
+        }])
         
         if hasattr(self.app, "definir_licitacao_ativa"):
             self.app.definir_licitacao_ativa(lic, [{"numero_item": 1, "descricao": lic.get("objeto", "")[:50]}])
@@ -1371,101 +2063,99 @@ class PainelEditais(ctk.CTkFrame):
 
         # 2. Feedback Visual Inicial
         if hasattr(self, 'btn_carregar_direto'):
-            self.btn_carregar_direto.configure(text="⏳ Carregando...", state="disabled")
+            self.btn_carregar_direto.configure(text="⏳ Buscando no Drive/PNCP...", state="disabled")
+
+        if hasattr(self, "txt_parecer"):
+            try:
+                self.txt_parecer.delete("1.0", "end")
+                self.txt_parecer.insert("1.0", "Carregando vistoria técnica do edital...")
+            except Exception:
+                pass
+        if hasattr(self, "lbl_vistoria_parecer"):
+            self.lbl_vistoria_parecer.configure(text="Carregando vistoria técnica do edital...")
+        if hasattr(self, "lbl_vistoria_pontos"):
+            self.lbl_vistoria_pontos.configure(text="")
 
         def restore_btn():
             if hasattr(self, 'btn_carregar_direto'):
-                self.btn_carregar_direto.configure(text="⚡ Carregar Direto", state="normal")
+                self.btn_carregar_direto.configure(text="⚡ Carregar do Drive / PNCP", state="normal")
 
         def worker():
             try:
-                # 3. Formato Comprasnet
-                m_compra = re.search(r"compra=(\d{17})", link)
-                if not m_compra:
-                    m_compra = re.search(r"\b(\d{17})\b", link)
+                from integrador_drive_ia import (
+                    resolver_e_carregar_origem,
+                    realizar_vistoria_previa_gemini,
+                )
 
-                if m_compra:
-                    cod = m_compra.group(1)
-                    uasg = cod[0:6]
-                    mod = cod[6:8]
-                    pregao = int(cod[8:13])
-                    ano = cod[13:17]
-                    
-                    sigla = f"[UASG {uasg}] Pregão {pregao}/{ano}"
-                    url_disputa = f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra={cod}"
-                    
-                    self.after(0, lambda: self.cmb_certames.set(sigla))
-                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                    self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", f"Buscando itens Comprasnet: {sigla}...", "", "", "", "", "", "")))
-                    
-                    import os
-                    from supabase import create_client
-                    url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
-                    key = os.getenv("SUPABASE_KEY") or ""
-                    sb = create_client(url, key)
-                    
-                    res = sb.table("licitacoes").select("*").ilike("numero_pregao", f"%{pregao}/{ano}%").eq("numero_uasg", uasg).execute()
-                    if res.data:
-                        lic = res.data[0]
-                        if isinstance(lic, dict):
-                            lic["link_sistema"] = url_disputa
-                            self.after(0, lambda l=lic: self._exibir_itens(l))
-                            
-                            # Sincronizar com o Console
-                            def sync_console():
-                                if hasattr(self.app, 'painel_sessao') and hasattr(self.app.painel_sessao, 'txt_url'):
-                                    self.app.painel_sessao.txt_url.delete(0, 'end')
-                                    self.app.painel_sessao.txt_url.insert(0, url_disputa)
-                                self._ir_para_disputa()
-                                messagebox.showinfo("Sucesso", f"✅ Certame carregado com sucesso!\n{sigla}")
-                                
-                            self.after(500, sync_console)
+                self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
+                self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando pasta no Google Drive e dados do certame...", "", "", "", "", "", "")))
+
+                dados = resolver_e_carregar_origem(link)
+                pasta_drive = dados.get("caminho_pasta") or ""
+                self.pasta_drive_ativa = pasta_drive
+
+                itens = dados.get("itens") or []
+                lic = dados.get("licitacao") or {}
+
+                # Atualiza combobox e botão do Drive
+                def atualizar_topo():
+                    if pasta_drive:
+                        self.btn_abrir_drive.configure(state="normal")
                     else:
-                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                        self.after(0, lambda: messagebox.showerror("Erro", f"Licitação {sigla} não encontrada no banco. Verifique se ela foi coletada primeiro."))
-                        
-                # 4. Formato PNCP
-                elif "pncp.gov.br" in link:
-                    m_pncp = re.search(r"pncp\.gov\.br/app/editais/(\d+)/(\d{4})/(\d+)", link)
-                    if not m_pncp:
-                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                        self.after(0, lambda: messagebox.showerror("Erro", "URL PNCP não possui CNPJ, Ano e Sequência válidos."))
-                        return
-                        
-                    cnpj, ano, seq = m_pncp.groups()
-                    
-                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                    self.after(0, lambda: self.tree_itens.insert("", "end", values=("⏳", "Buscando itens no PNCP...", "", "", "", "", "", "")))
-                    
-                    from pncp_client import carregar_certame_pncp
-                    resultado = carregar_certame_pncp(link)
-                    
-                    if resultado:
-                        fake_lic = {"id": "direct_import", "numero_pregao": link, "link_sistema": link}
-                        self.after(0, lambda: self._exibir_itens_pncp(fake_lic, resultado))
-                        
-                        def sync_console_pncp():
-                            if hasattr(self.app, 'painel_sessao') and hasattr(self.app.painel_sessao, 'txt_url'):
-                                self.app.painel_sessao.txt_url.delete(0, 'end')
-                                self.app.painel_sessao.txt_url.insert(0, link)
-                            self._ir_para_disputa()
-                            messagebox.showinfo("Sucesso", "✅ Certame carregado com sucesso!")
-                            
-                        self.after(500, sync_console_pncp)
-                    else:
-                        self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                        self.after(0, lambda: messagebox.showerror("Erro", "Erro ao extrair itens do PNCP ou portal indisponível."))
-                else:
-                    self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                    self.after(0, lambda: messagebox.showerror("Erro", "Formato de link não reconhecido.\nUse um link de disputa Comprasnet (com ?compra=...) ou PNCP."))
-                    
+                        self.btn_abrir_drive.configure(state="disabled")
+                    orgao_nome = lic.get("orgao_nome", "")[:25]
+                    pregao_num = lic.get("numero_pregao", "")
+                    uf = lic.get("uf", "DRIVE")
+                    self.cmb_certames.set(f"[{uf}] {orgao_nome} - {pregao_num}")
+
+                self.after(0, atualizar_topo)
+
+                # Feedback Vistoria IA
+                self.after(0, lambda: self.lbl_vistoria_badge.configure(
+                    text="⏳ EXECUTANDO VISTORIA IA (GEMINI)...",
+                    fg_color="#3B82F6",
+                    text_color="#FFFFFF"
+                ))
+
+                vistoria = realizar_vistoria_previa_gemini(dados, itens)
+                itens_finais = vistoria.get("itens_atualizados") or itens
+
+                def aplicar_resultado():
+                    self._exibir_itens_completos(lic, itens_finais, vistoria)
+                    badge_txt = vistoria.get("badge", "🟢 VISTORIA CONCLUÍDA")
+                    bg_color = "#10B981" if "VIÁVEL" in badge_txt or "APROVADA" in badge_txt else "#F59E0B"
+                    self.lbl_vistoria_badge.configure(text=badge_txt, fg_color=bg_color, text_color="#000000")
+                    parecer_txt = vistoria.get("parecer_resumido", "")
+                    self.lbl_vistoria_parecer.configure(text=parecer_txt)
+                    if hasattr(self, "txt_parecer"):
+                        try:
+                            self.txt_parecer.delete("1.0", "end")
+                            self.txt_parecer.insert("1.0", parecer_txt)
+                        except Exception:
+                            pass
+                    pontos = vistoria.get("pontos_atencao", [])
+                    self.lbl_vistoria_pontos.configure(text="\n".join(f"• {p}" for p in pontos))
+
+                    url_disp = lic.get("link_sistema", "")
+                    if url_disp and hasattr(self.app, 'painel_sessao') and hasattr(self.app.painel_sessao, 'txt_url'):
+                        self.app.painel_sessao.txt_url.delete(0, 'end')
+                        self.app.painel_sessao.txt_url.insert(0, url_disp)
+
+                    import tkinter.messagebox as messagebox
+                    msg_pasta = f"\nPasta Drive: {pasta_drive}" if pasta_drive else ""
+                    messagebox.showinfo("Vistoria IA Concluída", f"✅ Processo e Pasta carregados com sucesso!\n\nÓrgão: {lic.get('orgao_nome', 'N/D')}\nPregão: {lic.get('numero_pregao', 'N/D')}{msg_pasta}\n\nVistoria IA: {badge_txt}")
+
+                self.after(0, aplicar_resultado)
+
             except Exception as e:
                 import traceback
-                err_msg = traceback.format_exc()
-                import logging
-                logging.error(f"Erro carregar direto: {err_msg}")
+                logger.error(f"Erro ao carregar do Drive: {traceback.format_exc()}")
                 self.after(0, lambda: self.tree_itens.delete(*self.tree_itens.get_children()))
-                self.after(0, lambda: messagebox.showerror("Erro", f"Ocorreu um erro ao processar o link:\n{e}"))
+                err_msg = str(e)
+                def mostrar_erro():
+                    import tkinter.messagebox as messagebox
+                    messagebox.showerror("Erro ao Carregar", f"Não foi possível processar a entrada:\n{err_msg}\n\nVerifique o link do Drive, PNCP ou nome do processo.")
+                self.after(0, mostrar_erro)
             finally:
                 self.after(0, restore_btn)
 
@@ -1543,6 +2233,111 @@ class PainelEditais(ctk.CTkFrame):
                 
         threading.Thread(target=_run_bg, daemon=True).start()
 
+    def carregar_itens_externos(self, itens: list[dict]) -> None:
+        """Carrega itens diretamente (ex: via captura Zero-Touch do Chrome) e exibe na grade."""
+        lic = getattr(self, "licitacao_ativa", None) or getattr(self.app, "licitacao_ativa", None) or {
+            "id": "zero_touch",
+            "orgao_nome": "Sessão Compras.gov.br (Zero-Touch)",
+            "numero_pregao": "Ao Vivo",
+            "uf": "BR"
+        }
+        self.licitacao_ativa = lic
+        self.app.licitacao_ativa = lic
+        self.itens_ativos = itens
+        self.app.itens_ativos = itens
+        self._exibir_itens_completos(lic, itens)
+
+    def _aprovar_participacao_disputa(self) -> None:
+        """
+        Aprova formalmente a participação da JRBC TECH no certame:
+        - Grava status_analise = 'aprovado_disputa'
+        - Grava stop_loss e margens no Supabase (licitacoes e itens_licitacao)
+        - Agenda a data da disputa
+        - Notifica o canal da JRBC TECH no Telegram via TelegramService
+        """
+        lic = getattr(self, "licitacao_ativa", None) or getattr(self.app, "licitacao_ativa", None)
+        if not lic or not isinstance(lic, dict):
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Atenção", "Selecione uma licitação primeiro para aprovar a participação.")
+            return
+
+        lic_id = lic.get("id")
+        if not lic_id:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Esta licitação não possui ID válido cadastrado no Supabase.")
+            return
+
+        itens = getattr(self, "itens_carregados", []) or getattr(self, "itens_ativos", []) or []
+        
+        # 1. Calcula o stop loss total
+        total_stop_loss = 0.0
+        for it in itens:
+            if isinstance(it, dict):
+                piso = float(it.get("piso_preco") or it.get("stop_loss") or it.get("preco_minimo") or 0.0)
+                qtd = float(it.get("quantidade") or 1.0)
+                total_stop_loss += (piso * qtd)
+
+        val_est = float(lic.get("valor_estimado") or 0.0)
+        if total_stop_loss <= 0.0:
+            total_stop_loss = val_est * 0.85 if val_est > 0 else 1000.0
+
+        data_sessao = str(lic.get("data_hora_sessao") or lic.get("data_abertura") or "")
+
+        import threading
+        def worker():
+            try:
+                from supabase_client import aprovar_licitacao_disputa
+                sucesso = aprovar_licitacao_disputa(
+                    licitacao_id=str(lic_id),
+                    stop_loss_total=total_stop_loss,
+                    itens=itens if isinstance(itens, list) else None,
+                    data_sessao=data_sessao if data_sessao else None,
+                )
+
+                # Notifica o Telegram via TelegramService
+                from telegram_service import TelegramService
+                orgao = str(lic.get("orgao_nome") or "Órgão Não Informado")
+                pregao = str(lic.get("numero_pregao") or "S/N")
+                uf = str(lic.get("uf") or "TO")
+                portal = str(lic.get("portal") or "COMPRAS_GOV")
+
+                msg_tg = (
+                    "🎯 *CERTAME APROVADO PARA DISPUTA (JRBC TECH)*\n\n"
+                    f"🏛️ *Órgão:* {orgao}\n"
+                    f"📋 *Pregão:* {pregao} (UF: {uf})\n"
+                    f"💰 *Valor Estimado:* R$ {val_est:,.2f}\n"
+                    f"🛑 *Stop-Loss Global Aprovado:* R$ {total_stop_loss:,.2f}\n"
+                    f"📅 *Data da Sessão:* {data_sessao or 'A consultar no edital'}\n"
+                    f"🌐 *Portal:* {portal}\n\n"
+                    "✅ *Status:* Gravado na Agenda e pronto para o Console de Disputa!"
+                )
+                TelegramService.enviar_mensagem(msg_tg)
+
+                def callback_gui():
+                    import tkinter.messagebox as messagebox
+                    if hasattr(self.app, "painel_aprovados") and hasattr(self.app.painel_aprovados, "carregar_aprovados"):
+                        self.app.painel_aprovados.carregar_aprovados()
+                    if hasattr(self.app, "painel_sessao") and hasattr(self.app.painel_sessao, "atualizar_seletor_disputa"):
+                        self.app.painel_sessao.atualizar_seletor_disputa()
+
+                    resp = messagebox.askyesno(
+                        "Participação Aprovada! 🎯",
+                        f"✅ Certame APROVADO PARA DISPUTA com sucesso!\n\n"
+                        f"🛑 Stop-Loss: R$ {total_stop_loss:,.2f}\n"
+                        f"📲 Notificação enviada ao Telegram da JRBC TECH!\n\n"
+                        f"Deseja abrir agora a agenda '🎯 Aprovados para Participação'?"
+                    )
+                    if resp:
+                        self.app.selecionar_aba("🎯  Aprovados para Participação")
+
+                self.after(0, callback_gui)
+            except Exception as exc:
+                logger.error(f"Erro ao aprovar participação: {exc}")
+                self.after(0, lambda: messagebox.showerror("Erro", f"Falha ao registrar aprovação:\n{exc}"))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+
 # ─── LOG HANDLER PARA INTERFACE TKINTER ──────────────────────────────────────
 class TkinterLogHandler(logging.Handler):
     """Encaminha mensagens de log do Python diretamente para a caixa de log do PainelSessao."""
@@ -1568,8 +2363,18 @@ class PainelSessao(ctk.CTkFrame):
         self._motor: Optional[MotorDecisao] = None
         self._thread_bot: Optional[threading.Thread] = None
         self._item_rows: dict[int, str] = {}  # Mapeia numero_item -> item_id no Treeview
+        self.itens_disputa: list[dict] = []
+        
+        # Suporte a Múltiplas Disputas Simultâneas:
+        # chave_certame -> {"bot": BrowserBot, "motor": MotorDecisao, "thread": Thread, "lic": dict, "url": str, "dry_run": bool, "status": str}
+        self.sessoes_ativas: dict[str, dict] = {}
+        self.aba_detectada_info: Optional[dict] = None
+
         self._build()
         self._setup_logging()
+        self.after(300, self.atualizar_seletor_disputa)
+        # Inicia checagem periódica suave de abas no Google Chrome
+        self.after(2000, self._loop_detector_abas)
 
     def _setup_logging(self) -> None:
         handler = TkinterLogHandler(self)
@@ -1584,53 +2389,50 @@ class PainelSessao(ctk.CTkFrame):
             return
             
         lic = self.app.licitacao_ativa
+        self.licitacao_ativa = lic
         num_pregao = lic.get("numero_pregao", "")
-        if num_pregao:
-            vals = self.cmb_disputa._values if hasattr(self.cmb_disputa, '_values') else []
-            texto = f"[{lic.get('uf','')}] {lic.get('orgao_nome','')[:20]} - {num_pregao}"
-            
-            # Atualiza Dropdown
-            novos_vals = list(vals) if vals else []
-            if "(Nenhum pregão carregado)" in novos_vals:
-                novos_vals.remove("(Nenhum pregão carregado)")
-            if "(Nenhum pregão)" in novos_vals:
-                novos_vals.remove("(Nenhum pregão)")
-                
-            if texto not in novos_vals and num_pregao not in novos_vals:
-                novos_vals.append(texto)
-                
-            self.cmb_disputa.configure(values=novos_vals)
-            
-            try:
-                if texto in novos_vals:
-                    self.cmb_disputa.set(texto)
-                else:
-                    self.cmb_disputa.set(num_pregao)
-            except:
-                pass
-                
-            # Atualiza URL Sala de Disputa
-            url = lic.get("link_sistema", "") or lic.get("url_edital", "") or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
-            if hasattr(self, 'txt_url'):
+        orgao = (lic.get("orgao_nome") or "")[:28]
+        uf = lic.get("uf", "")
+        texto_certame = f"📌 Certame: [{uf}] {orgao} - {num_pregao}" if num_pregao else "📄 Certame Ativo"
+
+        if hasattr(self, 'lbl_certame_ativo'):
+            self.lbl_certame_ativo.configure(text=texto_certame)
+
+        # Atualiza URL com Sala de Disputa REAL (não edital PNCP bruto)
+        url_real = calcular_url_disputa_real(lic)
+        if hasattr(self, 'txt_url') and url_real:
+            url_atual = self.txt_url.get().strip()
+            if not url_atual or "login" in url_atual or "compra=" not in url_atual:
                 self.txt_url.delete(0, "end")
-                self.txt_url.insert(0, url)
+                self.txt_url.insert(0, url_real)
+        
+        # Checa se há aba aberta para este certame
+        self.after(200, self._checar_aba_ativa_silencioso)
+        for item in self.tree_sessao.get_children():
+            self.tree_sessao.delete(item)
             
-            for item in self.tree_sessao.get_children():
-                self.tree_sessao.delete(item)
+        self._item_rows.clear()
+        itens = getattr(self.app, 'itens_ativos', []) or getattr(self, 'itens_disputa', [])
+        if itens:
+            self.itens_disputa = itens
+            for it in itens:
+                num = str(it.get("numero_item", it.get("num", "1")))
+                desc = str(it.get("descricao", ""))[:50]
+                piso = _safe_float(it.get("piso_seguro", it.get("preco_minimo", 0.0)))
+                piso_str = f"R$ {piso:,.2f}" if piso > 0 else "-"
+                meu_lance = it.get("nosso_ultimo_lance")
+                meu_str = f"R$ {_safe_float(meu_lance):,.2f}" if meu_lance is not None else "-"
+                melhor_lance = it.get("melhor_lance")
+                melhor_str = f"R$ {_safe_float(melhor_lance):,.2f}" if melhor_lance is not None else "-"
+                pos = it.get("posicao")
+                pos_str = f"{pos}º" if pos else "-"
+                sit = it.get("situacao") or "AGUARDANDO"
                 
-            self._item_rows.clear()
-            if hasattr(self.app, 'itens_ativos'):
-                for it in self.app.itens_ativos:
-                    num = str(it.get("numero_item", it.get("num", "1")))
-                    desc = str(it.get("descricao", ""))[:50]
-                    piso = float(it.get("piso_seguro", 0.0))
-                    piso_str = f"R$ {piso:,.2f}" if piso > 0 else "-"
-                    
-                    iid = self.tree_sessao.insert("", "end", values=(num, desc, "-", piso_str, "-", "AGUARDANDO"))
-                    try:
-                        self._item_rows[int(num)] = iid
-                    except:
-                        pass
+                iid = self.tree_sessao.insert("", "end", values=(num, desc, meu_str, melhor_str, pos_str, sit))
+                try:
+                    self._item_rows[int(num)] = iid
+                except:
+                    pass
 
     def _build(self) -> None:
         self.grid_columnconfigure(0, weight=1)
@@ -1652,21 +2454,30 @@ class PainelSessao(ctk.CTkFrame):
             text_color=COR["text_primary"],
         ).grid(row=0, column=0, sticky="w")
 
-        # Seletor do Pregão para Disputa
-        ctk.CTkLabel(
-            ctrl_top,
-            text="Disputar Licitação:",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            text_color=COR["accent_cyan"],
-        ).grid(row=0, column=1, padx=(16, 4), sticky="e")
-
+        # Menu Suspenso de Seleção de Certame (Carrega PRIORITARIAMENTE os APROVADOS PARA DISPUTA)
         self.cmb_disputa = ctk.CTkComboBox(
             ctrl_top,
-            values=["(Nenhum pregão)"],
-            width=260,
-            command=self._on_disputa_mudou,
+            values=["(Carregando certames aprovados...)"],
+            width=360,
+            font=ctk.CTkFont(size=11),
+            command=self.carregar_licitacao_disputa,
         )
-        self.cmb_disputa.grid(row=0, column=2, padx=4, sticky="e")
+        self.cmb_disputa.grid(row=0, column=1, padx=(16, 8), sticky="e")
+
+        self.btn_ir_editais = ctk.CTkButton(
+            ctrl_top,
+            text="📄 Editais & Custos",
+            width=130,
+            height=28,
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COR["bg_card"],
+            hover_color=COR.get("bg_hover", "#2b2e35"),
+            text_color=COR["accent_cyan"],
+            border_width=1,
+            border_color=COR["border"],
+            command=lambda: self.app.selecionar_aba("📄  Editais & Custos"),
+        )
+        self.btn_ir_editais.grid(row=0, column=2, padx=4, sticky="e")
 
         # Switch Simulação vs Real
         self.sw_modo = ctk.CTkSwitch(
@@ -1677,11 +2488,24 @@ class PainelSessao(ctk.CTkFrame):
             command=self._on_modo_switch,
         )
         self.sw_modo.select()
-        self.sw_modo.grid(row=0, column=3, padx=(16, 0), sticky="e")
+        self.sw_modo.grid(row=0, column=3, padx=(12, 0), sticky="e")
+
+        # Badge de Disputas Simultâneas Ativas
+        self.lbl_disputas_ativas_badge = ctk.CTkLabel(
+            ctrl_top,
+            text="⚡ 0 Ativas",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["text_secondary"],
+            fg_color=COR["bg_deep"],
+            corner_radius=6,
+            padx=10,
+            pady=4,
+        )
+        self.lbl_disputas_ativas_badge.grid(row=0, column=4, padx=(10, 0), sticky="e")
 
         # Linha de URL do Comprasnet e Botões de Ação
         ctrl_actions = ctk.CTkFrame(card_ctrl, fg_color="transparent")
-        ctrl_actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 10))
+        ctrl_actions.grid(row=1, column=0, sticky="ew", padx=16, pady=(0, 6))
         ctrl_actions.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -1693,11 +2517,12 @@ class PainelSessao(ctk.CTkFrame):
 
         self.txt_url = ctk.CTkEntry(
             ctrl_actions,
-            placeholder_text="https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br",
+            placeholder_text="https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/disputa?compra=...",
             font=ctk.CTkFont(size=11),
         )
         self.txt_url.insert(0, "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br")
         self.txt_url.grid(row=0, column=1, padx=6, sticky="ew")
+        self.txt_url.bind("<KeyRelease>", lambda e: self.after(500, self._checar_aba_ativa_silencioso))
 
         self.btn_login_nativo = ctk.CTkButton(
             ctrl_actions,
@@ -1746,17 +2571,72 @@ class PainelSessao(ctk.CTkFrame):
         )
         self.btn_parar.grid(row=0, column=5, padx=4, sticky="e")
 
+        # Linha de Detecção Inteligente de Abas do Chrome (CDP)
+        ctrl_detector = ctk.CTkFrame(card_ctrl, fg_color=COR["bg_deep"], corner_radius=6)
+        ctrl_detector.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 10))
+        ctrl_detector.grid_columnconfigure(0, weight=1)
+
+        self.lbl_aba_status = ctk.CTkLabel(
+            ctrl_detector,
+            text="🔍 Monitorando abas abertas no Google Chrome...",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            text_color=COR["text_secondary"],
+            anchor="w",
+        )
+        self.lbl_aba_status.grid(row=0, column=0, padx=12, pady=6, sticky="w")
+
+        self.btn_usar_aba = ctk.CTkButton(
+            ctrl_detector,
+            text="🎯 Usar Esta Aba Aberta",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color=COR["accent_cyan"],
+            text_color="#000000",
+            height=26,
+            width=160,
+            state="disabled",
+            command=self._usar_aba_detectada,
+        )
+        self.btn_usar_aba.grid(row=0, column=1, padx=(4, 6), pady=6, sticky="e")
+
+        self.btn_checar_abas = ctk.CTkButton(
+            ctrl_detector,
+            text="🔄 Checar Abas",
+            font=ctk.CTkFont(size=11),
+            fg_color=COR["bg_panel"],
+            text_color=COR["text_primary"],
+            height=26,
+            width=100,
+            command=self._checar_aba_ativa_agora,
+        )
+        self.btn_checar_abas.grid(row=0, column=2, padx=(0, 8), pady=6, sticky="e")
+
         # Monitor de Itens na Disputa
         card_monitor = CardFrame(self)
         card_monitor.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 10))
         card_monitor.grid_columnconfigure(0, weight=1)
 
+        mon_header = ctk.CTkFrame(card_monitor, fg_color="transparent")
+        mon_header.grid(row=0, column=0, sticky="ew", padx=16, pady=(10, 4))
+        mon_header.grid_columnconfigure(0, weight=1)
+
         ctk.CTkLabel(
-            card_monitor,
+            mon_header,
             text="📊  Status dos Itens na Disputa",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color=COR["text_primary"],
-        ).grid(row=0, column=0, sticky="w", padx=16, pady=(10, 4))
+        ).grid(row=0, column=0, sticky="w")
+
+        self.btn_zero_touch = ctk.CTkButton(
+            mon_header,
+            text="⚡ Capturar da Tela (Zero-Touch)",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_cyan"],
+            text_color="#000000",
+            hover_color=COR["accent_blue"],
+            height=30,
+            command=self._capturar_itens_zero_touch,
+        )
+        self.btn_zero_touch.grid(row=0, column=1, sticky="e")
 
         tbl_f = ctk.CTkFrame(card_monitor, fg_color="transparent")
         tbl_f.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
@@ -1896,25 +2776,16 @@ class PainelSessao(ctk.CTkFrame):
             self.sw_modo.configure(text="⚠️ MODO REAL (Envio de Lances)", progress_color=COR["accent_red"])
 
     def _on_disputa_mudou(self, escolha: str) -> None:
-        # Se mudou no console, pede para o Painel Editais buscar os dados,
-        # o que por consequência chamará sincronizar_com_licitacao_ativa() preenchendo a tabela
-        if hasattr(self.app, 'painel_editais'):
-            if hasattr(self.app, 'licitacao_ativa'):
-                lic = self.app.licitacao_ativa
-                texto_atual = f"[{lic.get('uf','')}] {lic.get('orgao_nome','')[:20]} - {lic.get('numero_pregao','')}"
-                if escolha in (texto_atual, lic.get('numero_pregao','')):
-                    return # Já é a mesma
-                    
-            vals = self.app.painel_editais.cmb_certames._values if hasattr(self.app.painel_editais.cmb_certames, '_values') else []
-            alvo = escolha
-            if escolha not in vals:
-                for v in vals:
-                    if escolha in v or (len(escolha.split('-')) > 1 and escolha.split('-')[-1].strip() in v):
-                        alvo = v
-                        break
-            
-            self.app.painel_editais.cmb_certames.set(alvo)
-            self.app.painel_editais._on_certame_selecionado(alvo)
+        self.carregar_licitacao_disputa(escolha)
+        if hasattr(self.app, 'painel_editais') and hasattr(self.app.painel_editais, 'cmb_certames'):
+            vals = getattr(self.app.painel_editais.cmb_certames, '_values', [])
+            for v in vals:
+                if escolha in v or (len(escolha.split('-')) > 1 and escolha.split('-')[-1].strip() in v):
+                    try:
+                        self.app.painel_editais.cmb_certames.set(v)
+                    except Exception:
+                        pass
+                    break
 
     def atualizar_seletor_disputa(self) -> None:
         import os
@@ -1923,71 +2794,225 @@ class PainelSessao(ctk.CTkFrame):
             url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
             key = os.getenv("SUPABASE_KEY") or ""
             sb = create_client(url, key)
-            res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).execute()
-            self.dados_nuvem = res.data
+            res = sb.table("licitacoes").select("*").order("atualizado_em", desc=True).limit(200).execute()
+            raw_data = res.data or []
+            
+            # Prioriza certames com status_analise == 'aprovado_disputa'
+            aprovados = []
+            outros = []
+            for lic in raw_data:
+                if not isinstance(lic, dict): continue
+                st = str(lic.get("status_analise") or "").lower()
+                if st == "aprovado_disputa":
+                    aprovados.append(lic)
+                elif st not in ["descartada", "concluido"]:
+                    outros.append(lic)
+            
+            # Lista final com aprovados no topo
+            self.dados_nuvem = aprovados + outros
+            
+            # Formata opções do dropdown com destaque visual
+            opcoes = []
+            for lic in self.dados_nuvem:
+                uf = str(lic.get("uf") or "BR")
+                orgao = str(lic.get("orgao_nome") or "")[:20]
+                pregao = str(lic.get("numero_pregao") or "S/N")
+                st = str(lic.get("status_analise") or "").lower()
+                if st == "aprovado_disputa":
+                    opcoes.append(f"🎯 [APROVADO] [{uf}] {orgao} - {pregao}")
+                else:
+                    opcoes.append(f"[{uf}] {orgao} - {pregao}")
+            
+            if not opcoes:
+                opcoes = ["(Nenhum certame cadastrado)"]
+                
+            if hasattr(self, "cmb_disputa") and self.cmb_disputa:
+                self.cmb_disputa.configure(values=opcoes)
+                # Se não há certame ativo selecionado e há certames aprovados, carrega o primeiro
+                if aprovados and not getattr(self.app, "licitacao_ativa", None):
+                    self.cmb_disputa.set(opcoes[0])
+                    self.after(50, lambda: self.carregar_licitacao_disputa(opcoes[0]))
         except Exception as e:
+            logger.warning(f"Falha ao carregar licitações do Supabase: {e}")
             self.dados_nuvem = []
 
-        if not self.dados_nuvem:
-            self.cmb_disputa.configure(values=["(Nenhum pregão carregado)"])
-            self.cmb_disputa.set("(Nenhum pregão carregado)")
-            self.atualizar_tabela_inicial()
-            return
+        # Se já existe certame ativo definido em Editais & Custos, sincroniza com ele
+        if getattr(self.app, "licitacao_ativa", None):
+            self.sincronizar_com_licitacao_ativa()
+        else:
+            self.after(200, self._checar_aba_ativa_silencioso)
 
-        lista_chaves = []
-        for lic in self.dados_nuvem:
-            uf = lic.get("uf", "")  # type: ignore
-            orgao = lic.get("orgao_nome", "")[:20]  # type: ignore
-            pregao = lic.get("numero_pregao", "")  # type: ignore
-            texto = f"[{uf}] {orgao} - {pregao}"
-            lista_chaves.append(texto)
-            
-        self.cmb_disputa.configure(values=lista_chaves)
-        if lista_chaves:
-            self.cmb_disputa.set(lista_chaves[0])
-            self.atualizar_tabela_inicial()
-
-    def atualizar_tabela_inicial(self) -> None:
-        """Preenche a tabela da disputa com os itens do certame selecionado em estado aguardando."""
+    def carregar_licitacao_disputa(self, escolha: str) -> None:
+        """Carrega todos os itens e metadados essenciais da licitação selecionada na tela de disputa."""
         for r in self.tree_sessao.get_children():
             self.tree_sessao.delete(r)
         self._item_rows.clear()
 
-        escolha = self.cmb_disputa.get()
         if not escolha or escolha.startswith("(Nenhum"):
             return
 
-        idx = self.cmb_disputa._values.index(escolha) if escolha in self.cmb_disputa._values else -1
-        if idx < 0 or not hasattr(self, "dados_nuvem"):
+        if not hasattr(self, "dados_nuvem") or not self.dados_nuvem:
             return
 
-        lic = self.dados_nuvem[idx]
+        # Remove prefixo de badge se houver
+        escolha_limpa = escolha.replace("🎯 [APROVADO] ", "").strip()
 
-        # Formata o numero do processo para a URL
-        uasg = str(lic.get("numero_uasg", "")).zfill(6)  # type: ignore
-        num_raw = str(lic.get("numero_pregao", ""))  # type: ignore
-        num = num_raw.split("/")[0].zfill(5) if "/" in num_raw else num_raw.zfill(5)
-        ano = num_raw.split("/")[1] if "/" in num_raw else "2024"
-        mod_cod = "05" if "preg" in (lic.get("modalidade") or "").lower() else "06"  # type: ignore
-        numero_compra = f"{uasg}{mod_cod}{num}{ano}"
+        # Localiza o registro da licitação selecionada
+        lic: Optional[dict[str, Any]] = None
+        for item_lic in self.dados_nuvem:
+            if not isinstance(item_lic, dict):
+                continue
+            uf = item_lic.get("uf", "")
+            orgao = str(item_lic.get("orgao_nome", "") or "")[:20]
+            pregao = item_lic.get("numero_pregao", "")
+            texto = f"[{uf}] {orgao} - {pregao}"
+            if escolha_limpa == texto or escolha_limpa == pregao:
+                lic = dict(item_lic)
+                break
 
-        url_sug = f"https://cnetmobile.estaleiro.serpro.gov.br/comprasnet-web/seguro/fornecedor/compras?compra={numero_compra}"
+        if not lic and hasattr(self, "cmb_disputa") and self.cmb_disputa:
+            vals = getattr(self.cmb_disputa, '_values', [])
+            idx = vals.index(escolha) if escolha in vals else -1
+            if idx >= 0 and idx < len(self.dados_nuvem):
+                c = self.dados_nuvem[idx]
+                if isinstance(c, dict):
+                    lic = dict(c)
+
+        if not lic:
+            return
+
+        self.licitacao_ativa = lic
+        self.app.licitacao_ativa = lic
+        if hasattr(self, 'lbl_certame_ativo'):
+            uf = lic.get("uf", "")
+            orgao = str(lic.get("orgao_nome") or "")[:28]
+            pregao = lic.get("numero_pregao", "")
+            self.lbl_certame_ativo.configure(text=f"📌 Certame: [{uf}] {orgao} - {pregao}")
+
+        # 1. Determina a URL real da sala de disputa (calculando compra Comprasnet, Licitanet, SIGA, etc.)
+        url_alvo = calcular_url_disputa_real(lic)
         if hasattr(self, "txt_url"):
             self.txt_url.delete(0, "end")
-            self.txt_url.insert(0, url_sug)
+            self.txt_url.insert(0, url_alvo)
 
-        # Preenche com os dados salvos no Supabase
-        valor = float(lic.get("valor_estimado") or 0.0)  # type: ignore
-        piso = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
-        v_ref_str = f"R$ {valor:,.2f}" if valor else "—"
-        piso_str = f"R$ {piso:,.2f}"
+        # Checa status de disputa simultânea para este certame
+        chave = str(lic.get("numero_pregao") or lic.get("id") or "")
+        sessao_existente = self.sessoes_ativas.get(chave)
+        if sessao_existente and sessao_existente.get("status") == "EM_DISPUTA":
+            self.btn_iniciar.configure(state="disabled")
+            self.btn_parar.configure(state="normal")
+            self._bot = sessao_existente.get("bot")
+            self._motor = sessao_existente.get("motor")
+            self.log(f"⚡ O certame '{escolha}' já está com Robô Ativo disputando em segundo plano.")
+        else:
+            self.btn_iniciar.configure(state="normal")
+            self.btn_parar.configure(state="disabled")
+
+        # Dispara verificação se a aba correspondente já está aberta no Chrome
+        self.after(200, self._checar_aba_ativa_silencioso)
+
+        # 2. Carrega Itens da licitação (Supabase ou PNCP)
+        lic_id = lic.get("id")
+        itens_salvos: list[dict[str, Any]] = []
+        if lic_id:
+            try:
+                import os
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                sb = create_client(url, key)
+                res = sb.table("itens_licitacao").select("*").eq("licitacao_id", lic_id).order("numero_item").execute()
+                itens_salvos = [dict(it) for it in res.data if isinstance(it, dict)] if res.data else []
+            except Exception as e:
+                logger.warning(f"Erro ao buscar itens no Supabase: {e}")
+
+        if itens_salvos:
+            self._renderizar_itens_disputa(itens_salvos)
+            self.log(f"📋 {len(itens_salvos)} itens carregados para a disputa: {str(lic.get('orgao_nome', ''))[:40]}")
+            return
+
+        # Se não há itens salvos e é do PNCP, busca na hora via API
+        num_controle = str(lic.get("numero_controle_pncp") or "")
+        link_ed = str(lic.get("link_edital") or "")
+        alvo_pncp = num_controle if "/" in num_controle else link_ed
+
+        if ("pncp" in alvo_pncp.lower() or "/" in num_controle) and lic_id:
+            self.tree_sessao.insert("", "end", values=("⏳", "Buscando itens oficiais no PNCP...", "—", "—", "—", "Carregando..."))
+
+            def _worker_pncp_live():
+                try:
+                    from pncp_client import extrair_params_pncp, sincronizar_itens_certame_supabase
+                    cnpj, ano, seq = extrair_params_pncp(alvo_pncp)
+                    novos_itens = sincronizar_itens_certame_supabase(cnpj, ano, seq, str(lic_id))
+                    if novos_itens:
+                        self.after(0, lambda: self._renderizar_itens_disputa(novos_itens))
+                        self.after(0, lambda: self.log(f"✅ {len(novos_itens)} itens sincronizados do PNCP com sucesso!"))
+                        return
+                except Exception as exc:
+                    logger.warning(f"Falha ao carregar itens do PNCP: {exc}")
+
+                self.after(0, self._renderizar_item_resumo_fallback)
+
+            import threading
+            threading.Thread(target=_worker_pncp_live, daemon=True).start()
+        else:
+            self._renderizar_item_resumo_fallback()
+
+    def _renderizar_itens_disputa(self, itens: list[dict]) -> None:
+        """Renderiza cada item da licitação com seus dados financeiros e de lance."""
+        for r in self.tree_sessao.get_children():
+            self.tree_sessao.delete(r)
+        self._item_rows.clear()
+        self.itens_disputa = itens
+        self.app.itens_ativos = itens
+
+        for it in itens:
+            num = int(it.get("numero_item", 1))
+            desc = str(it.get("descricao", f"Item {num}"))
+            qtd = _safe_float(it.get("quantidade"), default=1.0)
+            un = str(it.get("unidade_medida", "UN"))
+            
+            desc_fmt = f"{desc[:55]} ({qtd:g} {un})" if len(desc) <= 55 else f"{desc[:50]}... ({qtd:g} {un})"
+            v_ref = _safe_float(it.get("valor_referencia"))
+            piso = _safe_float(it.get("preco_minimo"), default=(v_ref * 0.8 if v_ref > 0 else 0.0))
+            
+            v_ref_str = f"R$ {v_ref:,.2f}" if v_ref > 0 else "—"
+            piso_str = f"R$ {piso:,.2f}" if piso > 0 else "—"
+            
+            row_id = self.tree_sessao.insert(
+                "",
+                "end",
+                values=(
+                    num,
+                    desc_fmt,
+                    "—",
+                    v_ref_str,
+                    "—",
+                    f"⏳ AGUARDANDO (Stop: {piso_str})",
+                ),
+            )
+            self._item_rows[num] = row_id
+
+    def _renderizar_item_resumo_fallback(self) -> None:
+        for r in self.tree_sessao.get_children():
+            self.tree_sessao.delete(r)
+        self._item_rows.clear()
         
+        lic = getattr(self, "licitacao_ativa", None)
+        if not lic or not isinstance(lic, dict):
+            return
+            
+        valor = _safe_float(lic.get("valor_estimado"))
+        piso = _safe_float(lic.get("piso_seguro"), default=(valor * 0.7 if valor > 0 else 0.0))
+        v_ref_str = f"R$ {valor:,.2f}" if valor > 0 else "—"
+        piso_str = f"R$ {piso:,.2f}" if piso > 0 else "—"
+
         row_id = self.tree_sessao.insert(
             "",
             "end",
             values=(
                 1,
-                lic.get("objeto", "")[:80],  # type: ignore
+                (lic.get("objeto") or "Item Principal")[:80],
                 "—",
                 v_ref_str,
                 "—",
@@ -1996,27 +3021,331 @@ class PainelSessao(ctk.CTkFrame):
         )
         self._item_rows[1] = row_id
 
+    def _checar_aba_ativa_silencioso(self) -> None:
+        self._checar_aba_ativa_agora(notificar_se_nada=False)
+
+    def _loop_detector_abas(self) -> None:
+        try:
+            self._checar_aba_ativa_silencioso()
+        except Exception:
+            pass
+        finally:
+            self.after(3500, self._loop_detector_abas)
+
+    def _checar_aba_ativa_agora(self, notificar_se_nada: bool = True) -> None:
+        url_campo = self.txt_url.get().strip() if hasattr(self, "txt_url") else ""
+        lic = getattr(self, "licitacao_ativa", None)
+        termo = ""
+        if lic:
+            termo = f"{lic.get('numero_uasg', '')} {lic.get('numero_pregao', '')} {lic.get('orgao_nome', '')}"
+
+        aba = detectar_aba_disputa_ativa(url_campo, termo=termo)
+        if aba:
+            self.aba_detectada_info = aba
+            titulo = (aba.get("title") or "Sala de Disputa")[:45]
+            self.lbl_aba_status.configure(
+                text=f"🟢 Aba da Sala Detectada: {titulo}",
+                text_color=COR["accent_green"],
+            )
+            self.btn_usar_aba.configure(state="normal")
+            if notificar_se_nada:
+                self.log(f"🎯 Aba exata da disputa localizada no Chrome: '{aba.get('title')}'")
+        else:
+            self.aba_detectada_info = None
+            self.btn_usar_aba.configure(state="disabled")
+            if verificar_cdp_ativo():
+                self.lbl_aba_status.configure(
+                    text="🟡 Chrome aberto via automação. Navegue até a disputa ou faça Login Gov.br.",
+                    text_color=COR["accent_amber"],
+                )
+            else:
+                self.lbl_aba_status.configure(
+                    text="⚪ Chrome fechado ou sem porta de depuração. Clique em '🔑 Login Gov.br' para conectar.",
+                    text_color=COR["text_secondary"],
+                )
+            if notificar_se_nada:
+                self.log("ℹ️ Nenhuma aba da disputa aberta no momento. Clique em '🔑 Login Gov.br' ou '🌐 Abrir Sala'.")
+
+    def _usar_aba_detectada(self) -> None:
+        if not self.aba_detectada_info:
+            return
+        url_aba = self.aba_detectada_info.get("url", "")
+        if url_aba:
+            self.txt_url.delete(0, "end")
+            self.txt_url.insert(0, url_aba)
+            self.log(f"🎯 URL da aba ativa vinculada à sala: {url_aba}")
+            self.lbl_aba_status.configure(
+                text=f"✅ Vinculado à aba aberta: {self.aba_detectada_info.get('title', '')[:40]}",
+                text_color=COR["accent_cyan"],
+            )
+            # Sincroniza dados do certame e itens diretamente da aba ativa do Chrome
+            self._sincronizar_dados_da_aba_ao_vivo(url_aba)
+
+    def _sincronizar_dados_da_aba_ao_vivo(self, url_alvo: str = "") -> None:
+        """
+        Extrai em tempo real os dados da disputa (certame e itens) da aba aberta do Chrome
+        e sincroniza com o Console da Sessão e com Editais & Custos.
+        """
+        def worker():
+            dados = extrair_dados_aba_disputa(porta=9222, url_alvo=url_alvo)
+            if not dados:
+                return
+
+            certame = dados.get("certame")
+            itens = dados.get("itens")
+            if not certame:
+                return
+
+            def aplicar():
+                self.licitacao_ativa = certame
+                self.app.licitacao_ativa = certame
+                if itens:
+                    self.itens_disputa = itens
+                    self.app.itens_ativos = itens
+
+                num = certame.get("numero_pregao", "")
+                org = (certame.get("orgao_nome") or "")[:28]
+                uf = certame.get("uf", "BR")
+                if hasattr(self, 'lbl_certame_ativo'):
+                    self.lbl_certame_ativo.configure(
+                        text=f"📌 Certame Sincronizado do Chrome: [{uf}] {org} - {num}"
+                    )
+
+                # Atualiza a tabela com os itens extraídos da página
+                for item in self.tree_sessao.get_children():
+                    self.tree_sessao.delete(item)
+                self._item_rows.clear()
+
+                for it in (itens or []):
+                    n = str(it.get("numero_item", 1))
+                    d = it.get("descricao", f"Item {n}")
+                    meu = it.get("nosso_ultimo_lance")
+                    mel = it.get("melhor_lance")
+                    meu_s = f"R$ {_safe_float(meu):,.2f}" if meu is not None else "—"
+                    mel_s = f"R$ {_safe_float(mel):,.2f}" if mel is not None else "—"
+                    pos_s = f"{it.get('posicao', '—')}º" if it.get("posicao") else "—"
+                    sit = it.get("situacao") or "EM DISPUTA"
+                    iid = self.tree_sessao.insert("", "end", values=(n, d, meu_s, mel_s, pos_s, sit))
+                    try:
+                        self._item_rows[int(n)] = iid
+                    except:
+                        pass
+
+                self.log(f"🎯 Certame vinculado da aba do Chrome: {certame.get('modalidade')} {num} ({org})")
+                self.log(f"   {len(itens or [])} itens detectados ao vivo na sala de disputa.")
+
+                self._salvar_certame_extraido_nuvem(certame, itens or [])
+
+            self.after(0, aplicar)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _salvar_certame_extraido_nuvem(self, certame: dict, itens: list[dict]) -> None:
+        """Salva ou atualiza o certame extraído no Supabase com portal='COMPRAS_GOV'."""
+        try:
+            import os
+            from supabase import create_client
+            url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+            key = os.getenv("SUPABASE_KEY") or ""
+            if not key:
+                return
+            sb = create_client(url, key)
+
+            num_p = certame.get("numero_pregao")
+            num_u = certame.get("numero_uasg")
+            if num_p and num_u:
+                res = sb.table("licitacoes").select("id").eq("numero_pregao", num_p).eq("numero_uasg", num_u).execute()
+                if res.data and isinstance(res.data[0], dict):
+                    lic_id = res.data[0].get("id")
+                    certame["id"] = lic_id
+                else:
+                    novo_lic = {
+                        "portal": "COMPRAS_GOV",
+                        "orgao_nome": certame.get("orgao_nome"),
+                        "numero_uasg": num_u,
+                        "numero_pregao": num_p,
+                        "modalidade": certame.get("modalidade"),
+                        "uf": certame.get("uf", "BR"),
+                        "url_sala_disputa": certame.get("url_sala_disputa"),
+                        "link_sistema": certame.get("link_sistema"),
+                        "status": "EM_DISPUTA",
+                    }
+                    res_ins = sb.table("licitacoes").insert(novo_lic).execute()
+                    if res_ins.data and isinstance(res_ins.data[0], dict):
+                        certame["id"] = res_ins.data[0].get("id")
+        except Exception as e:
+            logger.debug(f"Aviso ao persistir certame no Supabase: {e}")
+
+    def _capturar_itens_zero_touch(self) -> None:
+        """
+        Lê todos os cards '.cp-itens-disputa' da aba aberta do Chrome em tempo real,
+        popula a grade com os itens, calcula e aplica o stop-loss sugerido (30% produto / 50% serviço).
+        """
+        self.btn_zero_touch.configure(text="⏳ Capturando da Tela...", state="disabled")
+        self.log("⚡ Zero-Touch: Iniciando scan nos cards '.cp-itens-disputa' da tela ativa do Chrome...")
+
+        def _worker():
+            itens: list[dict] = []
+            certame_info: Optional[dict] = None
+
+            # 1. Se bot estiver ativo com page aberta, usa diretamente
+            if self._bot and getattr(self._bot, "_page", None):
+                try:
+                    itens = extrair_todos_itens_sala(self._bot._page)
+                except Exception as e:
+                    logger.warning(f"Erro ao capturar itens via bot._page: {e}")
+
+            # 2. Se não capturou via bot ativo, conecta via CDP ao Chrome na porta 9222
+            if not itens:
+                try:
+                    url_alvo = self.txt_url.get().strip() if hasattr(self, "txt_url") else ""
+                    dados_cdp = extrair_dados_aba_disputa(porta=9222, url_alvo=url_alvo)
+                    if dados_cdp and dados_cdp.get("certame"):
+                        certame_info = dados_cdp["certame"]
+
+                    itens = extrair_todos_itens_sala_cdp(porta=9222, url_alvo=url_alvo)
+                except Exception as e:
+                    logger.warning(f"Erro ao capturar itens via CDP: {e}")
+
+            def _finalizar():
+                self.btn_zero_touch.configure(text="⚡ Capturar da Tela (Zero-Touch)", state="normal")
+                if not itens:
+                    self.log("⚠️ Zero-Touch: Nenhum card '.cp-itens-disputa' encontrado na aba ativa do Chrome.")
+                    messagebox.showwarning(
+                        "Zero-Touch",
+                        "Nenhum card de item encontrado na tela aberta do Chrome.\n\n"
+                        "Certifique-se de que:\n"
+                        "1. O Google Chrome foi iniciado na porta 9222 (ex: via launch_robo.sh).\n"
+                        "2. A sala de disputa do certame está aberta no navegador.",
+                    )
+                    return
+
+                # Se obteve informações do certame via CDP, atualiza licitação ativa
+                if certame_info:
+                    self.licitacao_ativa = certame_info
+                    self.app.licitacao_ativa = certame_info
+                    num_p = certame_info.get("numero_pregao", "")
+                    org_p = (certame_info.get("orgao_nome") or "")[:28]
+                    uf_p = certame_info.get("uf", "BR")
+                    if hasattr(self, "lbl_certame_ativo"):
+                        self.lbl_certame_ativo.configure(
+                            text=f"📌 Certame Sincronizado: [{uf_p}] {org_p} - {num_p}"
+                        )
+                    url_sala = certame_info.get("url_sala_disputa") or certame_info.get("link_sistema")
+                    if url_sala and hasattr(self, "txt_url"):
+                        self.txt_url.delete(0, "end")
+                        self.txt_url.insert(0, url_sala)
+
+                self.itens_disputa = itens
+                self.app.itens_ativos = itens
+
+                # Renderiza na tabela tree_sessao do Console de Lances
+                for r in self.tree_sessao.get_children():
+                    self.tree_sessao.delete(r)
+                self._item_rows.clear()
+
+                qtd_servicos = sum(1 for it in itens if it.get("tipo_item") == "SERVIÇO")
+                qtd_produtos = len(itens) - qtd_servicos
+
+                for it in itens:
+                    num = int(it.get("numero_item", 1))
+                    desc = str(it.get("descricao", f"Item {num}"))
+                    desc_fmt = desc[:50] + "..." if len(desc) > 50 else desc
+
+                    meu = it.get("nosso_ultimo_lance") or it.get("proposta_inicial")
+                    meu_str = f"R$ {float(meu):,.2f}" if meu is not None else "—"
+
+                    mel = it.get("melhor_lance") or it.get("valor_referencia")
+                    mel_str = f"R$ {float(mel):,.2f}" if mel is not None else "—"
+
+                    pos = it.get("posicao")
+                    pos_str = f"{pos}º" if pos else "—"
+
+                    piso = float(it.get("stop_loss_sugerido", 0.0))
+                    margem = int(it.get("margem_sugerida", 30))
+                    tipo = it.get("tipo_item", "PROD")[:4]
+
+                    status_str = f"🛡️ STOP: R$ {piso:,.2f} ({margem}% {tipo})"
+
+                    row_id = self.tree_sessao.insert(
+                        "", "end",
+                        values=(num, desc_fmt, meu_str, mel_str, pos_str, status_str),
+                    )
+                    self._item_rows[num] = row_id
+
+                # Sincroniza também com a grade de Editais & Custos se o painel estiver instanciado
+                if hasattr(self.app, "painel_editais") and hasattr(self.app.painel_editais, "carregar_itens_externos"):
+                    try:
+                        self.app.painel_editais.carregar_itens_externos(itens)
+                    except Exception as err:
+                        logger.debug(f"Aviso ao sincronizar itens com painel_editais: {err}")
+
+                msg_sucesso = (
+                    f"⚡ Carga Zero-Touch concluída com sucesso!\n"
+                    f"• {len(itens)} itens capturados diretamente da sala de disputa\n"
+                    f"• {qtd_servicos} serviços (Stop-Loss automático: margem de 50%)\n"
+                    f"• {qtd_produtos} produtos (Stop-Loss automático: margem de 30%)\n\n"
+                    f"A grade de itens e os parâmetros operacionais foram atualizados."
+                )
+                self.log(f"⚡ Zero-Touch: {len(itens)} itens capturados ({qtd_servicos} serviços a 50%, {qtd_produtos} produtos a 30%).")
+                messagebox.showinfo("Carga Zero-Touch Concluída", msg_sucesso)
+
+            self.after(0, _finalizar)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _atualizar_badge_disputas(self) -> None:
+        ativas = [k for k, v in self.sessoes_ativas.items() if v.get("status") == "EM_DISPUTA"]
+        total = len(ativas)
+        if total == 0:
+            self.lbl_disputas_ativas_badge.configure(
+                text="⚡ 0 Ativas",
+                text_color=COR["text_secondary"],
+            )
+        elif total == 1:
+            self.lbl_disputas_ativas_badge.configure(
+                text="⚡ 1 Disputa Ativa",
+                text_color=COR["accent_green"],
+            )
+        else:
+            self.lbl_disputas_ativas_badge.configure(
+                text=f"🔥 {total} Simultâneas",
+                text_color=COR["accent_cyan"],
+            )
+
     def _iniciar_sessao(self) -> None:
-        escolha = self.cmb_disputa.get()
-        if not escolha or escolha.startswith("(Nenhum"):
+        lic = getattr(self, "licitacao_ativa", None) or getattr(self.app, "licitacao_ativa", None)
+        if not lic and self.aba_detectada_info:
+            url_aba = self.aba_detectada_info.get("url", "")
+            self._sincronizar_dados_da_aba_ao_vivo(url_aba)
+            lic = getattr(self, "licitacao_ativa", None)
+
+        if not lic:
             messagebox.showwarning(
-                "Selecione um Pregão",
-                "Carregue ou selecione um pregão válido na nuvem antes de iniciar a disputa.",
+                "Nenhum Certame Selecionado",
+                "Por favor, selecione ou importe uma licitação na aba '📄 Editais & Custos'\nou conecte a aba aberta do Chrome antes de iniciar a disputa.",
             )
             return
 
-        idx = self.cmb_disputa._values.index(escolha) if escolha in self.cmb_disputa._values else -1
-        if idx < 0 or not hasattr(self, "dados_nuvem"):
-            return
+        num_pregao = lic.get("numero_pregao", "")
+        orgao = (lic.get("orgao_nome") or "")[:25]
+        uf = lic.get("uf", "")
+        nome_certame = f"[{uf}] {orgao} - {num_pregao}" if num_pregao else "Certame Ativo"
 
-        lic = self.dados_nuvem[idx]
+        chave = str(lic.get("numero_pregao") or lic.get("id") or str(uuid.uuid4()))
+        if chave in self.sessoes_ativas and self.sessoes_ativas[chave].get("status") == "EM_DISPUTA":
+            messagebox.showinfo(
+                "Disputa em Andamento",
+                f"O certame '{nome_certame}' já está com o robô disputando em segundo plano.",
+            )
+            return
 
         dry_run = bool(self.sw_modo.get())
         if not dry_run:
             confirma = messagebox.askyesno(
                 "⚠️ CONFIRMAÇÃO DE MODO REAL",
                 "ATENÇÃO: O modo REAL está ativado!\n\n"
-                "Lances REAIS serão enviados ao Compras.gov.br com valor legal e financeiro.\n"
+                "Lances REAIS serão enviados com valor legal e financeiro.\n"
                 "Certifique-se de que todos os custos e stop-losses estão corretos.\n\n"
                 "Deseja realmente iniciar a disputa em MODO REAL?",
                 icon="warning",
@@ -2026,74 +3355,128 @@ class PainelSessao(ctk.CTkFrame):
                 return
 
         regras: list[RegraItem] = []
-        valor = float(lic.get("valor_estimado") or 100.0)  # type: ignore
-        custo_base = float(lic.get("custo_real") or valor * 0.6)  # type: ignore
-        piso_calc = float(lic.get("piso_seguro") or valor * 0.7)  # type: ignore
-        preco_ini = float(lic.get("valor_estimado") or piso_calc * 1.3)  # type: ignore
+        itens_disponiveis = getattr(self, "itens_disputa", []) or getattr(self.app, "itens_ativos", [])
+        
+        # Se não há itens e o Chrome está aberto, tenta carregar na hora
+        if not itens_disponiveis and self.aba_detectada_info:
+            url_aba = self.aba_detectada_info.get("url", "")
+            dados_live = extrair_dados_aba_disputa(porta=9222, url_alvo=url_aba)
+            if dados_live and dados_live.get("itens"):
+                itens_disponiveis = dados_live.get("itens")
+                self.itens_disputa = itens_disponiveis
+                self.app.itens_ativos = itens_disponiveis
 
-        regras.append(
-            RegraItem(
-                item_id=str(uuid.uuid4()),
-                numero_item=1,
-                descricao=lic.get("objeto", ""),  # type: ignore
-                custo_unitario=custo_base,
-                margem_minima_percent=10.0,
-                preco_minimo=piso_calc,
-                preco_inicial_proposta=preco_ini,
-                intervalo_minimo=float(lic.get("intervalo_minimo") or 0.01),  # type: ignore
-                tipo_intervalo=TipoIntervalo.MONETARIO,
-                valor_referencia=valor,
-                licitacao_id=lic.get("numero_pregao", "0"),  # type: ignore
+        if itens_disponiveis:
+            for it in itens_disponiveis:
+                num = int(it.get("numero_item", 1))
+                v_ref = _safe_float(it.get("valor_referencia") or it.get("melhor_lance"), default=100.0)
+                custo_base = _safe_float(it.get("custo_unitario") or it.get("custo_real"), default=v_ref * 0.6)
+                piso_calc = _safe_float(it.get("preco_minimo") or it.get("piso_seguro"), default=(v_ref * 0.7 if v_ref > 0 else 70.0))
+                preco_ini = _safe_float(it.get("preco_inicial_proposta") or it.get("nosso_ultimo_lance"), default=v_ref * 0.98)
+                regras.append(
+                    RegraItem(
+                        item_id=str(it.get("id") or uuid.uuid4()),
+                        numero_item=num,
+                        descricao=str(it.get("descricao", f"Item {num}")),
+                        custo_unitario=custo_base,
+                        margem_minima_percent=10.0,
+                        preco_minimo=piso_calc,
+                        preco_inicial_proposta=preco_ini,
+                        intervalo_minimo=_safe_float(lic.get("intervalo_minimo"), default=0.01),
+                        tipo_intervalo=TipoIntervalo.MONETARIO,
+                        valor_referencia=v_ref,
+                        licitacao_id=str(lic.get("numero_pregao", "0")),
+                    )
+                )
+        else:
+            valor = _safe_float(lic.get("valor_estimado"), default=100.0)
+            custo_base = _safe_float(lic.get("custo_real"), default=valor * 0.6)
+            piso_calc = _safe_float(lic.get("piso_seguro"), default=valor * 0.7)
+            preco_ini = _safe_float(lic.get("valor_estimado"), default=piso_calc * 1.3)
+            regras.append(
+                RegraItem(
+                    item_id=str(uuid.uuid4()),
+                    numero_item=1,
+                    descricao=lic.get("objeto", ""),
+                    custo_unitario=custo_base,
+                    margem_minima_percent=10.0,
+                    preco_minimo=piso_calc,
+                    preco_inicial_proposta=preco_ini,
+                    intervalo_minimo=float(lic.get("intervalo_minimo") or 0.01),
+                    tipo_intervalo=TipoIntervalo.MONETARIO,
+                    valor_referencia=valor,
+                    licitacao_id=str(lic.get("numero_pregao", "0")),
+                )
             )
-        )
 
         sessao_id = str(uuid.uuid4())
         url_alvo = self.txt_url.get().strip() or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
 
-        try:
-            self._motor = MotorDecisao(dry_run=dry_run)
-            self._motor.carregar_regras(regras)
-            self._motor.iniciar_sessao()
+        # Garante que o Chrome está rodando com CDP
+        if not verificar_cdp_ativo():
+            self.log("🌐 Iniciando Google Chrome com perfil de automação e sala de disputa...")
+            garantir_chrome_com_cdp(url_alvo)
+            time.sleep(1.2)
 
-            self._bot = BrowserBot(
-                motor=self._motor,
+        try:
+            motor = MotorDecisao(dry_run=dry_run)
+            motor.carregar_regras(regras)
+            motor.iniciar_sessao()
+
+            bot = BrowserBot(
+                motor=motor,
                 sessao_id=sessao_id,
-                licitacao_id=lic.get("numero_pregao", ""),  # type: ignore
-                callback_ciclo=self._on_ciclo_update,
+                licitacao_id=chave,
+                callback_ciclo=lambda ciclo, est, dec, k=chave: self._on_ciclo_update_multi(k, ciclo, est, dec),
             )
-            self._bot.callback_copiloto = self._trigger_copiloto_auto
+            bot.callback_copiloto = self._trigger_copiloto_auto
         except Exception as exc:
             messagebox.showerror("Erro ao Configurar Robô", f"Falha ao inicializar motor: {exc}")
             return
 
+        self._bot = bot
+        self._motor = motor
+
+        def _worker_multi(b_inst: BrowserBot, ch_lic: str, u_alvo: str):
+            try:
+                b_inst.iniciar(url_pregao=u_alvo, intervalo_polling_s=5.0)
+            except Exception as exc_bot:
+                logger.exception(f"Erro no robô do certame {ch_lic}")
+                err_msg = str(exc_bot)
+                self.after(0, lambda: self.log(f"❌ Erro no robô ({ch_lic}): {err_msg}"))
+            finally:
+                self.after(0, lambda: self._on_bot_finalizado_multi(ch_lic))
+
+        th = threading.Thread(target=_worker_multi, args=(bot, chave, url_alvo), daemon=True)
+        self.sessoes_ativas[chave] = {
+            "bot": bot,
+            "motor": motor,
+            "thread": th,
+            "lic": lic,
+            "url": url_alvo,
+            "dry_run": dry_run,
+            "status": "EM_DISPUTA",
+            "escolha": nome_certame,
+        }
+
         self.btn_iniciar.configure(state="disabled")
         self.btn_parar.configure(state="normal")
+        self._atualizar_badge_disputas()
 
         msg_modo = "🛡️ SIMULAÇÃO (Dry-Run)" if dry_run else "🔴 DISPUTA REAL (Envio de Lances)"
-        self.log(f"🚀 Iniciando robô para '{escolha}' | {msg_modo}")
+        self.log(f"🚀 Disputa iniciada para '{nome_certame}' | {msg_modo}")
         self.log(f"   Sessão ID: {sessao_id[:13]}... | {len(regras)} itens carregados | URL: {url_alvo}")
-
-        def _worker():
-            try:
-                if self._bot:
-                    self._bot.iniciar(url_pregao=url_alvo, intervalo_polling_s=5.0)
-            except Exception as exc_bot:
-                logger.exception("Erro crítico durante a execução do robô")
-                self.after(0, lambda: self.log(f"❌ Erro crítico no robô: {exc_bot}"))
-            finally:
-                self.after(0, self._on_bot_finalizado)
-
-        self._thread_bot = threading.Thread(target=_worker, daemon=True)
-        self._thread_bot.start()
+        th.start()
 
     def _fazer_login_nativo(self) -> None:
         url = self.txt_url.get().strip() or "https://sso.acesso.gov.br/login?client_id=comprasnet.gov.br"
-        self.log("🔑 Abrindo Google Chrome nativo para login no Gov.br...")
-        sucesso = abrir_login_nativo(url)
+        self.log("🔑 Abrindo Google Chrome com depuração para login no Gov.br...")
+        sucesso = garantir_chrome_com_cdp(url)
         if sucesso:
-            self.log("✅ Janela do Google Chrome aberta com o perfil do robô.")
-            self.log("💡 Realize o login normalmente por CPF, QR Code ou Banco.")
-            self.log("👉 Quando estiver autenticado, clique em '▶️ Iniciar Disputa'!")
+            self.log("✅ Janela do Google Chrome aberta com o perfil do robô (porta 9222).")
+            self.log("💡 Realize o login no Gov.br normalmente (CPF, QR Code ou Banco).")
+            self.log("👉 O robô reconhece a aba da disputa automaticamente quando aberta!")
+            self.after(1500, self._checar_aba_ativa_agora)
         else:
             messagebox.showerror("Erro ao Abrir Navegador", "Google Chrome não encontrado no sistema.")
 
@@ -2101,24 +3484,63 @@ class PainelSessao(ctk.CTkFrame):
         url = self.txt_url.get().strip()
         if not url:
             return
-        if self._bot:
-            self._bot.navegar_para(url)
-            self.log(f"🌐 Solicitada abertura manual da URL: {url}")
-        else:
-            self.log("ℹ️ Inicie a disputa com '▶️ Iniciar Disputa' para abrir o navegador.")
+        if self._bot and hasattr(self._bot, "navegar_para"):
+            try:
+                self._bot.navegar_para(url)
+                self.log(f"🌐 Solicitada navegação na sala via bot: {url}")
+                return
+            except Exception:
+                pass
+        
+        self.log(f"🌐 Abrindo sala no Google Chrome com depuração: {url}")
+        garantir_chrome_com_cdp(url)
+        self.after(1500, self._checar_aba_ativa_agora)
 
     def _parar_sessao(self) -> None:
-        if self._bot:
-            self._bot.parar()
-            self.log("⏹️ Comando de parada enviado. Encerrando sessão...")
+        lic = getattr(self, "licitacao_ativa", None) or getattr(self.app, "licitacao_ativa", None)
+        chave = str(lic.get("numero_pregao") or lic.get("id") or "") if lic else ""
+        nome_certame = f"[{lic.get('uf','')}] {lic.get('orgao_nome','')[:25]} - {lic.get('numero_pregao','')}" if lic else "certame ativo"
+
+        sessao = self.sessoes_ativas.get(chave)
+        if sessao and sessao.get("bot"):
+            sessao["bot"].parar()
+            sessao["status"] = "PARADO"
+            self.log(f"⏹️ Comando de parada enviado para '{nome_certame}'.")
             self.btn_parar.configure(state="disabled")
+            self.btn_iniciar.configure(state="normal")
+            self._atualizar_badge_disputas()
+        elif self._bot:
+            self._bot.parar()
+            self.log("⏹️ Comando de parada enviado.")
+            self.btn_parar.configure(state="disabled")
+            self.btn_iniciar.configure(state="normal")
+            self._atualizar_badge_disputas()
         else:
-            self.log("⏹️ Nenhum robô ativo no momento.")
+            self.log("⏹️ Nenhum robô ativo para este certame.")
+
+    def _on_bot_finalizado_multi(self, chave: str) -> None:
+        if chave in self.sessoes_ativas:
+            self.sessoes_ativas[chave]["status"] = "PARADO"
+        
+        lic_atual = getattr(self, "licitacao_ativa", None)
+        chave_atual = str(lic_atual.get("numero_pregao") or lic_atual.get("id") or "") if lic_atual else ""
+        if chave_atual == chave:
+            self.btn_iniciar.configure(state="normal")
+            self.btn_parar.configure(state="disabled")
+            
+        self._atualizar_badge_disputas()
+        self.log(f"🏁 Sessão de monitoramento finalizada para certame ({chave}).")
 
     def _on_bot_finalizado(self) -> None:
         self.btn_iniciar.configure(state="normal")
         self.btn_parar.configure(state="disabled")
         self.log("🏁 Sessão de monitoramento finalizada.")
+
+    def _on_ciclo_update_multi(self, chave: str, ciclo: int, estados: list[Any], decisoes: dict[int, Any]) -> None:
+        lic_atual = getattr(self, "licitacao_ativa", None)
+        chave_atual = str(lic_atual.get("numero_pregao") or lic_atual.get("id") or "") if lic_atual else ""
+        if chave_atual == chave:
+            self.after(0, lambda: self._render_ciclo_ui(ciclo, estados, decisoes))
 
     def _on_ciclo_update(self, ciclo: int, estados: list[Any], decisoes: dict[int, Any]) -> None:
         self.after(0, lambda: self._render_ciclo_ui(ciclo, estados, decisoes))
@@ -2138,7 +3560,6 @@ class PainelSessao(ctk.CTkFrame):
             menor_lance_str = f"R$ {menor_lance:,.2f}" if menor_lance is not None else "—"
             pos_str = f"{pos}º" if pos is not None else "—"
 
-            # Determina badge de status
             status_txt = "⏳ DISPUTANDO"
             if dec:
                 if dec.bloqueado_stop_loss:
@@ -2151,19 +3572,37 @@ class PainelSessao(ctk.CTkFrame):
                     liderando_cnt += 1
                 elif (pos and pos > 1):
                     status_txt = "🟡 SUPERADO"
+            elif pos == 1:
+                status_txt = "🏆 LIDERANDO"
+                liderando_cnt += 1
+            elif pos and pos > 1:
+                status_txt = "🟡 SUPERADO"
 
+            desc_item = str(getattr(ep, "descricao", None) or f"Item {num}")
             if num in self._item_rows:
                 row_id = self._item_rows[num]
-                desc_atual = self.tree_sessao.item(row_id)["values"][1]  # type: ignore
+                item_dict = self.tree_sessao.item(row_id)
+                vals = item_dict.get("values", []) if isinstance(item_dict, dict) else []
+                old_desc = str(vals[1]) if isinstance(vals, (list, tuple)) and len(vals) > 1 else ""
+                desc_final = ep.descricao if (getattr(ep, "descricao", None) and ("A CONTRATAÇÃO" in old_desc or "Item " in old_desc)) else (old_desc or desc_item)
                 self.tree_sessao.item(
                     row_id,
-                    values=(num, desc_atual, meu_lance_str, menor_lance_str, pos_str, status_txt),
+                    values=(num, desc_final, meu_lance_str, menor_lance_str, pos_str, status_txt),
                 )
+            else:
+                row_id = self.tree_sessao.insert(
+                    "", "end",
+                    values=(num, desc_item, meu_lance_str, menor_lance_str, pos_str, status_txt)
+                )
+                self._item_rows[num] = row_id
 
-        # Atualiza métricas no Dashboard
         if hasattr(self.app, "painel_dashboard"):
-            self.app.painel_dashboard.card_liderando.atualizar(str(liderando_cnt))
-            self.app.painel_dashboard.card_stop_loss.atualizar(str(piso_cnt))
+            card = getattr(self.app.painel_dashboard, "card_liderando", None) or getattr(self.app.painel_dashboard, "card_lideranca", None)
+            if card and hasattr(card, "atualizar"):
+                card.atualizar(str(liderando_cnt))
+            card_stop = getattr(self.app.painel_dashboard, "card_stop_loss", None)
+            if card_stop and hasattr(card_stop, "atualizar"):
+                card_stop.atualizar(str(piso_cnt))
 
     def _limpar_log(self) -> None:
         self.txt_log.delete("1.0", "end")
@@ -2201,13 +3640,35 @@ class PainelSessao(ctk.CTkFrame):
             
         self._adicionar_chat(f"Operador: {msg}", "#10B981") # Verde
         
-        # Coleta estado do pregao
+        # Coleta estado do pregão enriquecido com itens e valores reais
+        lic = getattr(self, "licitacao_ativa", None)
+        itens = getattr(self, "itens_disputa", [])
+        
+        resumo_item = "Itens em Disputa"
+        v_ref_item = "0,00"
+        piso_item = "N/A"
+        
+        if itens:
+            it0 = itens[0]
+            resumo_item = f"Item {it0.get('numero_item', 1)}: {it0.get('descricao', '')[:40]}"
+            v_ref_item = f"{float(it0.get('valor_referencia') or 0):,.2f}"
+            piso_item = f"{float(it0.get('preco_minimo') or it0.get('piso_seguro') or 0):,.2f}"
+        elif lic:
+            v_est = float(lic.get("valor_estimado") or 0.0)
+            v_ref_item = f"{v_est:,.2f}"
+            piso_item = f"{float(lic.get('piso_seguro') or v_est * 0.7):,.2f}"
+
+        desc_obj = (lic.get("objeto") or "") if lic else ""
         estado = {
-            "orgao": self.cmb_disputa.get() if self.cmb_disputa.get() != "(Nenhum pregão)" else "Desconhecido",
-            "item": "Itens atuais",
+            "orgao": (lic.get("orgao_nome") if lic else None) or "Certame Ativo",
+            "item": resumo_item,
+            "descricao": desc_obj[:100],
+            "quantidade": str(itens[0].get("quantidade", 1)) if itens else "1",
+            "unidade": str(itens[0].get("unidade_medida", "UN")) if itens else "UN",
+            "valor_referencia": v_ref_item,
             "meu_lance": "N/A",
             "melhor_lance": "N/A",
-            "stop_loss": "N/A",
+            "stop_loss": piso_item,
             "posicao": "N/A",
             "tempo_status": "Em andamento",
             "chat_pregoeiro": "Sem mensagens recentes"
@@ -2232,7 +3693,8 @@ class PainelSessao(ctk.CTkFrame):
                 resposta = consultar_copiloto(estado, msg)
                 self.after(0, lambda: self._adicionar_chat(f"Copiloto: {resposta}", "#00E5FF")) # Ciano
             except Exception as e:
-                self.after(0, lambda: self._adicionar_chat(f"Erro no Copiloto: {e}", "#FF5252"))
+                err_msg = str(e)
+                self.after(0, lambda: self._adicionar_chat(f"Erro no Copiloto: {err_msg}", "#FF5252"))
                 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2298,6 +3760,33 @@ class PainelPNCP(ctk.CTkFrame):
         self.tree_pncp.configure(yscrollcommand=sb.set)
         sb.grid(row=0, column=1, sticky="ns")
 
+        # Barra de Ações PNCP
+        acoes_f = ctk.CTkFrame(card_res, fg_color="transparent")
+        acoes_f.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
+
+        ctk.CTkButton(
+            acoes_f,
+            text="🎯 Enviar Selecionada para Disputa",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color=COR["accent_green"],
+            text_color="#080C14",
+            hover_color=COR["accent_cyan"],
+            height=34,
+            command=self._enviar_para_disputa,
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(
+            acoes_f,
+            text="🌐 Abrir no PNCP / Sistema",
+            font=ctk.CTkFont(weight="bold"),
+            fg_color=COR["accent_blue"],
+            text_color="#FFFFFF",
+            height=34,
+            command=self._abrir_no_navegador,
+        ).pack(side="left", padx=8)
+
+        self.itens_pncp_cache: list[dict] = []
+
     def _buscar_pncp(self) -> None:
         uf = self.cmb_uf.get()
         kw = self.txt_kw.get()
@@ -2308,7 +3797,8 @@ class PainelPNCP(ctk.CTkFrame):
                 itens = res.get("data", [])
                 self.after(0, lambda: self._preencher_pncp(itens))
             except Exception as exc:
-                self.after(0, lambda: messagebox.showerror("Erro PNCP", str(exc)))
+                err_msg = str(exc)
+                self.after(0, lambda: messagebox.showerror("Erro PNCP", err_msg))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2316,16 +3806,156 @@ class PainelPNCP(ctk.CTkFrame):
         for r in self.tree_pncp.get_children():
             self.tree_pncp.delete(r)
 
-        for i in itens:
+        self.itens_pncp_cache = itens or []
+
+        for idx, i in enumerate(self.itens_pncp_cache):
             orgao = i.get("orgaoEntidade", {}).get("razaoSocial", "N/A")
             objeto = i.get("objetoCompra", "Sem descrição")[:120]
             mod = i.get("modalidadeNome", "Pregão Eletrônico")
             val = i.get("valorTotalEstimado")
             val_str = f"R$ {val:,.2f}" if val else "N/A"
 
-            self.tree_pncp.insert("", "end", values=(orgao[:40], objeto, mod, val_str))
+            self.tree_pncp.insert("", "end", iid=str(idx), values=(orgao[:40], objeto, mod, val_str))
 
         messagebox.showinfo("PNCP", f"Encontradas {len(itens)} oportunidade(s) no PNCP!")
+
+    def _enviar_para_disputa(self) -> None:
+        sel = self.tree_pncp.selection()
+        if not sel:
+            messagebox.showwarning("Seleção", "Selecione uma oportunidade na tabela acima para enviar para a disputa.")
+            return
+
+        try:
+            idx = int(sel[0])
+            item_pncp = self.itens_pncp_cache[idx]
+        except Exception:
+            messagebox.showerror("Erro", "Falha ao identificar a oportunidade selecionada.")
+            return
+
+        cnpj = item_pncp.get("orgaoEntidade", {}).get("cnpj") or item_pncp.get("cnpj", "")
+        ano = item_pncp.get("anoCompra") or item_pncp.get("ano")
+        seq = item_pncp.get("sequencialCompra") or item_pncp.get("sequencial")
+        
+        # Salva no Supabase e sincroniza itens essenciais
+        try:
+            import buscador_pncp
+            notificados = set()
+            buscador_pncp.processar_e_salvar_edital(item_pncp, self.txt_kw.get() or "Geral", item_pncp.get("modalidadeNome", "Pregão Eletrônico"), notificados)
+        except Exception as e:
+            logger.warning(f"Aviso ao salvar certame: {e}")
+
+        # Atualiza o seletor da disputa e abre a aba do console
+        if hasattr(self.app, "painel_sessao"):
+            self.app.painel_sessao.atualizar_seletor_disputa()
+        
+        self.app.selecionar_aba("⚡  Console da Sessão")
+        messagebox.showinfo("Sucesso", "✅ Licitação enviada para o Console de Disputa com itens sincronizados!")
+
+    def _abrir_no_navegador(self) -> None:
+        sel = self.tree_pncp.selection()
+        if not sel:
+            return
+        try:
+            idx = int(sel[0])
+            item = self.itens_pncp_cache[idx]
+            link = item.get("linkSistemaOrigem")
+            if not link:
+                cnpj = item.get("orgaoEntidade", {}).get("cnpj", "")
+                ano = item.get("anoCompra") or item.get("ano")
+                seq = item.get("sequencialCompra") or item.get("sequencial")
+                if cnpj and ano and seq:
+                    link = f"https://pncp.gov.br/app/editais/{cnpj}/{ano}/{seq}"
+            if link:
+                import webbrowser
+                webbrowser.open(link)
+        except Exception as e:
+            messagebox.showerror("Erro", f"Não foi possível abrir o link: {e}")
+
+
+def formatar_distancia_palmas(municipio_raw: Any, uf_raw: Any, objeto_raw: Any = "") -> str:
+    """
+    Calcula e formata a distância de um município em relação à sede em Palmas/TO.
+    - Cidades do Tocantins (Palmas, Araguaína, Gurupi, Porto Alegre do TO, Itacajá, Paraíso):
+      calcula a quilometragem aproximada ou badge [TO - Local].
+    - Outros estados: exibe a sigla da UF com a distância real aproximada ou badge [Nacional / Remoto].
+    """
+    mun = str(municipio_raw or "").strip().upper()
+    uf = str(uf_raw or "").strip().upper()
+    obj = str(objeto_raw or "").lower()
+
+    import unicodedata
+    mun_norm = unicodedata.normalize('NFKD', mun).encode('ASCII', 'ignore').decode('utf-8').upper()
+
+    # Mapeamento detalhado das cidades do Tocantins (chaves normalizadas sem acento)
+    cidades_to = {
+        "PALMAS": "0 km [TO - Local]",
+        "PARAISO DO TOCANTINS": "~65 km [TO]",
+        "PARAISO": "~65 km [TO]",
+        "PORTO NACIONAL": "~60 km [TO]",
+        "MIRACEMA DO TOCANTINS": "~75 km [TO]",
+        "MIRACEMA": "~75 km [TO]",
+        "GUARAI": "~180 km [TO]",
+        "GURUPI": "~220 km [TO]",
+        "COLINAS DO TOCANTINS": "~270 km [TO]",
+        "COLINAS": "~270 km [TO]",
+        "PORTO ALEGRE DO TOCANTINS": "~290 km [TO]",
+        "PORTO ALEGRE DO TO": "~290 km [TO]",
+        "PORTO ALEGRE": "~290 km [TO]",
+        "ITACAJA": "~300 km [TO]",
+        "DIANOPOLIS": "~340 km [TO]",
+        "ARAGUAINA": "~380 km [TO]",
+    }
+
+    # 1. Verifica correspondência direta com cidades mapeadas do Tocantins
+    for cid_chave, dist_str in cidades_to.items():
+        if cid_chave in mun_norm:
+            return dist_str
+
+    # 2. Se for estado do Tocantins mas cidade não catalogada especificamente
+    if uf == "TO":
+        return "~200 km [TO - Local]"
+
+    # 3. Se for expressamente remoto ou de âmbito nacional
+    termos_remoto = ["remoto", "a distancia", "service desk", "help desk", "nuvem", "cloud", "teletrabalho"]
+    if any(tr in obj for tr in termos_remoto) or "REMOTO" in mun or "NACIONAL" in mun:
+        return "[Nacional / Remoto]"
+
+    # 4. Outros estados - distâncias médias a partir de Palmas/TO
+    dist_ufs = {
+        "DF": "~820 km",
+        "GO": "~870 km",
+        "MA": "~630 km",
+        "PA": "~550 km",
+        "BA": "~600 km",
+        "PI": "~1.100 km",
+        "MT": "~1.050 km",
+        "MS": "~1.350 km",
+        "MG": "~1.450 km",
+        "SP": "~1.750 km",
+        "RJ": "~1.850 km",
+        "PR": "~1.800 km",
+        "SC": "~2.100 km",
+        "RS": "~2.400 km",
+        "CE": "~1.600 km",
+        "PE": "~1.500 km",
+        "PB": "~1.700 km",
+        "RN": "~1.800 km",
+        "AL": "~1.600 km",
+        "SE": "~1.500 km",
+        "AM": "~1.500 km",
+        "RO": "~2.100 km",
+        "AC": "~2.600 km",
+        "RR": "~2.200 km",
+        "AP": "~1.200 km",
+        "ES": "~1.650 km",
+    }
+
+    if uf in dist_ufs:
+        return f"{uf} ({dist_ufs[uf]})"
+    elif uf and uf not in ["BR", "BRASIL", "NACIONAL"]:
+        return f"{uf} [Nacional / Remoto]"
+    else:
+        return "[Nacional / Remoto]"
 
 
 # ─── APLICAÇÃO PRINCIPAL (APP MULTI-CERTAME) ──────────────────────────────────
@@ -2333,36 +3963,80 @@ class PainelServicos(ctk.CTkFrame):
     def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
         super().__init__(master, fg_color="transparent", **kwargs)
         self.app = app
+        self._varredura_ativa: bool = False
         
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
-        ctk.CTkLabel(header_frame, text="🛠️ Serviços", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        ctk.CTkLabel(header_frame, text="🛠️ Serviços de TI & Infraestrutura", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
         
+        # Filtro de Prazo
+        ctk.CTkLabel(header_frame, text="Prazo:", font=ctk.CTkFont(size=11, weight="bold"), text_color="#9ca3af").pack(side="left", padx=(20, 6))
+        self.combo_prazo_srv = ctk.CTkComboBox(
+            header_frame,
+            values=["Todos os Prazos", "🚨 Encerram Hoje", "⚡ Encerram Amanhã", "⏳ < 48 Horas", "📅 Em Aberto (Futuras)"],
+            state="readonly",
+            width=170,
+            command=lambda e: self._exibir_servicos_nuvem()
+        )
+        self.combo_prazo_srv.set("Todos os Prazos")
+        self.combo_prazo_srv.pack(side="left")
+        disable_mouse_scroll(self.combo_prazo_srv)
+
         def _iniciar_siga_to():
+            if getattr(self, "_varredura_ativa", False):
+                import logging
+                logging.warning("[PainelServicos] Varredura já em andamento. Ignorando clique duplicado.")
+                return
+
+            self._varredura_ativa = True
+            btn_start_to.configure(state="disabled", text="⏳ VARRENDO SIGA-TO...")
             import threading
             import tkinter.messagebox as messagebox
             from siga_to_monitor import SigaMonitor
             import asyncio
             def worker():
-                monitor = SigaMonitor()
-                asyncio.run(monitor.executar_varredura())
-                self.after(0, self.carregar_servicos_nuvem)
-                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do SIGA-TO concluída! A tabela foi atualizada."))
+                try:
+                    monitor = SigaMonitor()
+                    asyncio.run(monitor.executar_varredura())
+                    self.after(0, self.carregar_servicos_nuvem)
+                    self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do SIGA-TO concluída! A tabela foi atualizada."))
+                except Exception as e:
+                    import logging
+                    logging.error(f"Erro na varredura do SIGA-TO: {e}")
+                    self.after(0, lambda: messagebox.showerror("Erro", f"Erro na varredura do SIGA-TO: {e}"))
+                finally:
+                    self._varredura_ativa = False
+                    self.after(0, lambda: btn_start_to.configure(state="normal", text="⚡ START / BUSCAR TOCANTINS"))
             threading.Thread(target=worker, daemon=True).start()
 
         def _iniciar_ambos():
+            if getattr(self, "_varredura_ativa", False):
+                import logging
+                logging.warning("[PainelServicos] Varredura já em andamento. Ignorando clique duplicado.")
+                return
+
+            self._varredura_ativa = True
+            btn_start_ambos.configure(state="disabled", text="⏳ MONITORANDO...")
             import threading
             import tkinter.messagebox as messagebox
             from buscador_pncp import executar_varredura_tocantins
             from siga_to_monitor import SigaMonitor
             import asyncio
             def worker_ambos():
-                executar_varredura_tocantins()
-                monitor = SigaMonitor()
-                asyncio.run(monitor.executar_varredura())
-                self.after(0, self.carregar_servicos_nuvem)
-                self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Compras.gov (PNCP) e SIGA-TO concluídas! A tabela foi atualizada."))
+                try:
+                    executar_varredura_tocantins()
+                    monitor = SigaMonitor()
+                    asyncio.run(monitor.executar_varredura())
+                    self.after(0, self.carregar_servicos_nuvem)
+                    self.after(0, lambda: messagebox.showinfo("Pronto", "Varredura do Compras.gov (PNCP) e SIGA-TO concluídas! A tabela foi atualizada."))
+                except Exception as e:
+                    import logging
+                    logging.error(f"Erro na varredura conjunta: {e}")
+                    self.after(0, lambda: messagebox.showerror("Erro", f"Erro na varredura: {e}"))
+                finally:
+                    self._varredura_ativa = False
+                    self.after(0, lambda: btn_start_ambos.configure(state="normal", text="🚀 MONITORAR AMBOS"))
             threading.Thread(target=worker_ambos, daemon=True).start()
             
         btn_start_ambos = ctk.CTkButton(header_frame, text="🚀 MONITORAR AMBOS", fg_color="#F59E0B", command=_iniciar_ambos)
@@ -2377,40 +4051,200 @@ class PainelServicos(ctk.CTkFrame):
         # Table
         from tkinter import ttk
         tree_frame = ctk.CTkFrame(self, fg_color="transparent")
-        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=(10, 6))
         
-        cols = ("uf_cidade", "distancia", "orgao", "objeto", "valor", "data_abertura")
+        cols = ("uf_cidade", "distancia", "orgao", "objeto", "valor", "prazo_proposta", "data_abertura")
         self.tree_servicos = ttk.Treeview(tree_frame, columns=cols, show="headings", height=8)
         self.tree_servicos.heading("uf_cidade", text="🏙️ UF / Cidade")
         self.tree_servicos.heading("distancia", text="🛣️ Distância (Palmas)")
         self.tree_servicos.heading("orgao", text="Órgão")
         self.tree_servicos.heading("objeto", text="Objeto do Serviço")
         self.tree_servicos.heading("valor", text="Valor Estimado (R$)")
-        self.tree_servicos.heading("data_abertura", text="Data Abertura")
+        self.tree_servicos.heading("prazo_proposta", text="⏰ Fim Proposta")
+        self.tree_servicos.heading("data_abertura", text="🏛️ Abertura/Disputa")
         
-        self.tree_servicos.column("uf_cidade", width=120, anchor="w")
-        self.tree_servicos.column("distancia", width=140, anchor="center")
-        self.tree_servicos.column("orgao", width=180, anchor="w")
-        self.tree_servicos.column("objeto", width=300, anchor="w")
+        self.tree_servicos.column("uf_cidade", width=110, anchor="w")
+        self.tree_servicos.column("distancia", width=130, anchor="center")
+        self.tree_servicos.column("orgao", width=170, anchor="w")
+        self.tree_servicos.column("objeto", width=270, anchor="w")
         self.tree_servicos.column("valor", width=120, anchor="e")
-        self.tree_servicos.column("data_abertura", width=120, anchor="center")
+        self.tree_servicos.column("prazo_proposta", width=170, anchor="center")
+        self.tree_servicos.column("data_abertura", width=140, anchor="center")
         
         self.tree_servicos.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
         self.tree_servicos.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
         self.tree_servicos.pack(fill="both", expand=True)
 
+        self.tree_servicos.bind("<<TreeviewSelect>>", self._on_servico_selecionado)
+        self.tree_servicos.bind("<Double-1>", lambda e: self.selecionar_e_precificar())
+
+        # Card de Informações e Cronograma do Serviço Selecionado
+        self.banner_cronograma = ctk.CTkFrame(self, fg_color="#0F172A", corner_radius=8, border_width=1, border_color="#1E293B")
+        self.banner_cronograma.pack(fill="x", padx=20, pady=(0, 8))
+        self.banner_cronograma.grid_columnconfigure(0, weight=1)
+
+        self.lbl_srv_selecionado = ctk.CTkLabel(
+            self.banner_cronograma, 
+            text="👆 Selecione um serviço na tabela acima para visualizar prazos e ações rápidas", 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            text_color="#94A3B8"
+        )
+        self.lbl_srv_selecionado.grid(row=0, column=0, sticky="w", padx=16, pady=(8, 2))
+
+        self.lbl_srv_datas = ctk.CTkLabel(
+            self.banner_cronograma, 
+            text="", 
+            font=ctk.CTkFont(size=12), 
+            text_color="#F8FAFC"
+        )
+        self.lbl_srv_datas.grid(row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+
         # Actions
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        btn_frame.pack(pady=10)
+        btn_frame.pack(pady=(0, 10))
         
-        ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", command=self.ver_escopo_tr).grid(row=0, column=0, padx=10)
-        ctk.CTkButton(btn_frame, text="🚚 Calcular SLA/Logística", command=self.calcular_sla).grid(row=0, column=1, padx=10)
-        ctk.CTkButton(btn_frame, text="📊 Gerar Excel", command=self.gerar_excel).grid(row=0, column=2, padx=10)
-        ctk.CTkButton(btn_frame, text="🏷️ Precificar Prod+Serv", fg_color=COR.get("accent_green", "#10b981"), text_color="#000000", command=self.abrir_precificador_misto).grid(row=0, column=3, padx=10)
+        ctk.CTkButton(
+            btn_frame, 
+            text="⚡ Selecionar & Precificar", 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            fg_color=COR["accent_cyan"], 
+            text_color="#080C14", 
+            hover_color=COR["accent_green"], 
+            height=38, 
+            command=self.selecionar_e_precificar
+        ).grid(row=0, column=0, padx=6)
+
+        ctk.CTkButton(
+            btn_frame, 
+            text="🚀 Mandar p/ Console de Sessão", 
+            font=ctk.CTkFont(size=12, weight="bold"), 
+            fg_color=COR["accent_green"], 
+            text_color="#080C14", 
+            hover_color=COR["accent_cyan"], 
+            height=38, 
+            command=self.mandar_para_console_sessao
+        ).grid(row=0, column=1, padx=6)
+
+        ctk.CTkButton(btn_frame, text="🏷️ Precificar Prod+Serv", fg_color="#3B82F6", height=38, command=self.abrir_precificador_misto).grid(row=0, column=2, padx=6)
+        ctk.CTkButton(btn_frame, text="📄 Ver Escopo TR", height=38, command=self.ver_escopo_tr).grid(row=0, column=3, padx=6)
+        ctk.CTkButton(btn_frame, text="🚚 SLA / Logística", height=38, command=self.calcular_sla).grid(row=0, column=4, padx=6)
+        ctk.CTkButton(btn_frame, text="🌐 Acessar Edital", height=38, command=self.abrir_link_edital).grid(row=0, column=5, padx=6)
+        ctk.CTkButton(btn_frame, text="📊 Gerar Excel", height=38, command=self.gerar_excel).grid(row=0, column=6, padx=6)
 
         self.dados_servicos = []
-        # Wait slightly to load after initialization
         self.after(500, self.carregar_servicos_nuvem)
+
+    def _on_servico_selecionado(self, event: Any = None) -> None:
+        sel = self.tree_servicos.selection()
+        if not sel:
+            return
+        srv = self.dados_servicos[int(sel[0])]
+        uf = srv.get("uf", "BR")
+        orgao = srv.get("orgao_nome", "Órgão")
+        pregao = srv.get("numero_pregao", "S/N")
+        valor = float(srv.get("valor_estimado") or 0.0)
+        
+        crono = PainelDashboard._extrair_cronograma_licitacao(srv)
+        self.lbl_srv_selecionado.configure(
+            text=f"📌 [{uf}] {orgao} • {pregao}  |  Valor Estimado: R$ {valor:,.2f}",
+            text_color=COR["accent_cyan"]
+        )
+        self.lbl_srv_datas.configure(
+            text=f"⏰ Limite Propostas: {crono['txt_encerramento']} ({crono['badge_texto']})   •   🏛️ Disputa / Abertura: {crono['txt_abertura']}"
+        )
+
+    def selecionar_e_precificar(self):
+        srv = self._get_selected_srv()
+        if not srv: return
+        
+        link = srv.get("link_sistema") or srv.get("link_edital") or srv.get("url_sala_disputa") or ""
+        
+        # Tenta alternar para a aba 'Editais & Custos' usando o container correto
+        if hasattr(self.app, "tab_container") and hasattr(self.app.tab_container, "set"):
+            self.app.tab_container.set("Editais & Custos")
+        elif hasattr(self.app, "mudar_aba"):
+            self.app.mudar_aba("Editais & Custos")
+        elif hasattr(self.app, "selecionar_aba"):
+            self.app.selecionar_aba("Editais & Custos")
+        
+        if hasattr(self.app, "painel_editais"):
+            pe = self.app.painel_editais
+            if hasattr(pe, "txt_entrada_rapida"):
+                pe.txt_entrada_rapida.delete(0, "end")
+                pe.txt_entrada_rapida.insert(0, link)
+                if hasattr(pe, "_carregar_direto"):
+                    pe._carregar_direto()
+
+    def mandar_para_console_sessao(self):
+        srv = self._get_selected_srv()
+        if not srv or not isinstance(srv, dict): return
+        
+        # 1. Carrega itens vinculados à licitação do Supabase se existirem
+        itens_ativos = []
+        lic_id = srv.get("id")
+        if lic_id:
+            try:
+                import os
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                sb = create_client(url, key)
+                res_itens = sb.table("itens_licitacao").select("*").eq("licitacao_id", lic_id).order("numero_item").execute()
+                for it in (res_itens.data or []):
+                    if not isinstance(it, dict):
+                        continue
+                    piso = _safe_float(it.get("custo_unitario") or it.get("valor_referencia"))
+                    itens_ativos.append({
+                        "numero_item": it.get("numero_item", 1),
+                        "descricao": it.get("descricao") or str(srv.get("objeto", ""))[:50],
+                        "piso_seguro": piso
+                    })
+            except Exception:
+                pass
+                
+        # 2. Se não houver itens cadastrados ainda, gera item base
+        if not itens_ativos:
+            val_est = _safe_float(srv.get("valor_estimado"))
+            piso_padrao = _safe_float(srv.get("stop_loss"), default=(val_est * 0.7 if val_est > 0 else 0.0))
+            itens_ativos.append({
+                "numero_item": 1,
+                "descricao": str(srv.get("objeto", "Serviços Especializados de TI"))[:60],
+                "piso_seguro": piso_padrao
+            })
+            
+        # 3. Define a licitação ativa no sistema principal
+        if hasattr(self.app, "definir_licitacao_ativa"):
+            self.app.definir_licitacao_ativa(srv, itens_ativos)
+            
+        # 4. Redireciona imediatamente para o Console da Sessão
+        if hasattr(self.app, "selecionar_aba"):
+            self.app.selecionar_aba("⚡  Console da Sessão")
+            
+        import tkinter.messagebox as messagebox
+        pregao = srv.get("numero_pregao", "S/N")
+        orgao = srv.get("orgao_nome", "")[:35]
+        crono = PainelDashboard._extrair_cronograma_licitacao(srv)
+        messagebox.showinfo(
+            "Console da Sessão", 
+            f"✅ Serviço carregado com sucesso no Console ao Vivo!\n\n"
+            f"🏛️ Órgão: {orgao}\n"
+            f"📋 Processo: {pregao}\n"
+            f"⏰ Fim da Proposta: {crono['txt_encerramento']}\n"
+            f"🏛️ Abertura/Disputa: {crono['txt_abertura']}\n"
+            f"💰 Valor: R$ {float(srv.get('valor_estimado') or 0.0):,.2f}\n\n"
+            f"Os campos de disputa e itens foram sincronizados para lances automáticos."
+        )
+
+    def abrir_link_edital(self):
+        srv = self._get_selected_srv()
+        if not srv: return
+        link = srv.get("link_edital") or srv.get("link_sistema") or ""
+        if link and link.startswith("http"):
+            import webbrowser
+            webbrowser.open(link)
+        else:
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("Link do Edital", "Edital não possui link cadastrado diretamente.")
 
     def carregar_servicos_nuvem(self):
         import threading
@@ -2421,17 +4255,32 @@ class PainelServicos(ctk.CTkFrame):
                 url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
                 key = os.getenv("SUPABASE_KEY") or ""
                 sb = create_client(url, key)
-                res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'SERVICO').order('atualizado_em', desc=True).execute()
+                res = sb.table('licitacoes').select('*').order('atualizado_em', desc=True).limit(200).execute()
                 
                 # Filtro para Tecnologia da Informação (TI e Infraestrutura) e Abertos
                 dados = []
-                ti_kws = ["cabeamento", "rede", "manutenção de computador", "notebook", "nobreak", "cftv", "suporte", "servidor", "proxmox", "linux", "firewall", "backup", "tecnologia", "informática"]
-                for srv in res.data:
+                ti_kws = [
+                    "cabeamento", "rede", "manutenção de computador", "notebook", "nobreak",
+                    "cftv", "suporte", "servidor", "proxmox", "linux", "firewall", "backup",
+                    "tecnologia", "informática", "software", "licença", "sistema", "infraestrutura",
+                    "telecom", "fibra", "help desk", "service desk"
+                ]
+                for srv in (res.data or []):
                     if not isinstance(srv, dict): continue
+                    tipo = str(srv.get("tipo_contratacao") or "").upper()
                     obj = str(srv.get("objeto") or "").lower()
                     status = str(srv.get("status_analise") or "pendente").lower()
-                    if status not in ["encerrada", "descartada"] and any(kw in obj for kw in ti_kws):
+                    if status in ["descartada"]:
+                        continue
+                    if tipo in ["SERVICO", "MISTO", ""] or any(kw in obj for kw in ti_kws):
                         dados.append(srv)
+
+                # Fallback: se nenhum item passar no filtro estrito, carrega certames abertos disponíveis
+                if not dados and res.data:
+                    for srv in res.data:
+                        if isinstance(srv, dict) and str(srv.get("status_analise") or "").lower() != "descartada":
+                            dados.append(srv)
+
                 self.dados_servicos = dados
             except Exception as e:
                 print("Erro ao carregar serviços:", e)
@@ -2444,27 +4293,87 @@ class PainelServicos(ctk.CTkFrame):
     def _exibir_servicos_nuvem(self):
         for row in self.tree_servicos.get_children():
             self.tree_servicos.delete(row)
+
+        from datetime import datetime, date, timedelta
+        hoje = date.today()
+        amanha = hoje + timedelta(days=1)
+
+        prazo_filtro = self.combo_prazo_srv.get() if hasattr(self, "combo_prazo_srv") else "Todos os Prazos"
+        
+        itens_filtrados = []
+        for srv in self.dados_servicos:
+            crono = PainelDashboard._extrair_cronograma_licitacao(srv)
+            st = crono["prazo_status"]
             
-        for i, srv in enumerate(self.dados_servicos):
+            # Checagem flexível de data convertida para a data local
+            dt_ref = crono.get("dt_ref")
+            d_ref = None
+            if dt_ref:
+                d_ref = dt_ref.astimezone().date() if (hasattr(dt_ref, "astimezone") and dt_ref.tzinfo) else dt_ref.date()
+
+            eh_hoje = (st == "hoje") or (d_ref == hoje)
+            eh_amanha = (st == "amanha") or (d_ref == amanha)
+            eh_48h = (st in ["hoje", "amanha", "48h"]) or (d_ref is not None and hoje <= d_ref <= hoje + timedelta(days=2))
+            eh_futura = (st in ["hoje", "amanha", "48h", "aberto"]) or (d_ref is not None and d_ref >= hoje)
+
+            if prazo_filtro == "🚨 Encerram Hoje" and not eh_hoje:
+                continue
+            elif prazo_filtro == "⚡ Encerram Amanhã" and not eh_amanha:
+                continue
+            elif prazo_filtro == "⏳ < 48 Horas" and not eh_48h:
+                continue
+            elif prazo_filtro == "📅 Em Aberto (Futuras)" and not eh_futura:
+                continue
+                
+            itens_filtrados.append((srv, crono))
+            
+        # Ordena: Mais urgentes primeiro
+        def chave_srv(item):
+            _, c = item
+            st = c["prazo_status"]
+            if st == "hoje": return (0, c["dias_restantes"])
+            elif st == "amanha": return (1, c["dias_restantes"])
+            elif st == "48h": return (2, c["dias_restantes"])
+            elif st == "aberto": return (3, c["dias_restantes"])
+            elif st == "sem_data": return (4, 0)
+            else: return (5, c["dias_restantes"])
+            
+        itens_filtrados.sort(key=chave_srv)
+
+        # Atualiza a lista dados_servicos para bater com os índices das linhas
+        self.dados_servicos = [item[0] for item in itens_filtrados]
+        
+        for i, (srv, crono) in enumerate(itens_filtrados):
             uf_cidade = f"[{srv.get('uf', 'BR')}] {srv.get('municipio', 'Nacional')}"
-            distancia = "0 km (Remoto)" if srv.get("uf") != "TO" else "Local (TO)"
+            distancia = formatar_distancia_palmas(srv.get("municipio"), srv.get("uf"), srv.get("objeto", ""))
             orgao = srv.get("orgao_nome", "")[:30]
             objeto = srv.get("objeto", "")[:50]
             valor = float(srv.get("valor_estimado") or 0.0)
             valor_str = f"R$ {valor:,.2f}"
-            data_raw = srv.get("data_abertura") or ""
-            abertura = str(data_raw)[:10] if data_raw else "N/D"
+            
+            # Formatação do prazo com indicador de urgência
+            if crono["prazo_status"] == "hoje":
+                fim_proposta = f"🚨 HOJE: {crono['txt_encerramento']}"
+            elif crono["prazo_status"] == "amanha":
+                fim_proposta = f"⚡ AMANHÃ: {crono['txt_encerramento']}"
+            elif crono["prazo_status"] == "48h":
+                fim_proposta = f"⏳ {crono['txt_encerramento']}"
+            else:
+                fim_proposta = crono["txt_encerramento"]
+                
+            abertura = crono["txt_abertura"]
             
             tag = "evenrow" if i % 2 == 0 else "oddrow"
-            self.tree_servicos.insert("", "end", iid=str(i), values=(uf_cidade, distancia, orgao, objeto, valor_str, abertura), tags=(tag,))
+            self.tree_servicos.insert("", "end", iid=str(i), values=(uf_cidade, distancia, orgao, objeto, valor_str, fim_proposta, abertura), tags=(tag,))
 
-    def _get_selected_srv(self):
+    def _get_selected_srv(self) -> Optional[dict[str, Any]]:
         sel = self.tree_servicos.selection()
         if not sel:
             import tkinter.messagebox as messagebox
             messagebox.showwarning("Aviso", "Selecione um serviço na tabela primeiro.")
             return None
-        return self.dados_servicos[int(sel[0])]
+        item = self.dados_servicos[int(sel[0])]
+        return dict(item) if isinstance(item, dict) else None
 
     def ver_escopo_tr(self):
         srv = self._get_selected_srv()
@@ -2716,7 +4625,8 @@ class PainelServicos(ctk.CTkFrame):
                         self.after(0, lambda: messagebox.showinfo("Sucesso", "Cotação e Produto salvos no Supabase!"))
                         self.after(0, top.destroy)
                 except Exception as e:
-                    self.after(0, lambda: messagebox.showerror("Erro", f"Erro ao salvar: {e}"))
+                    err_msg = str(e)
+                    self.after(0, lambda: messagebox.showerror("Erro", f"Erro ao salvar: {err_msg}"))
             threading.Thread(target=worker, daemon=True).start()
 
         ctk.CTkButton(top, text="💾 Salvar Cotação (Status COTADA)", fg_color=COR.get("accent_blue", "#3b82f6"), command=salvar_cotacao).pack(pady=20)
@@ -2729,7 +4639,7 @@ class PainelProdutos(ctk.CTkFrame):
         # Header
         header_frame = ctk.CTkFrame(self, fg_color="transparent")
         header_frame.pack(fill="x", padx=20, pady=(10, 0))
-        ctk.CTkLabel(header_frame, text="📦 Venda de Produtos", font=ctk.CTkFont(size=20, weight="bold")).pack(side="left")
+        ctk.CTkLabel(header_frame, text="📦  Serviço com Produtos (Misto: Peças + Mão de Obra)", font=ctk.CTkFont(size=20, weight="bold"), text_color=COR["accent_purple"]).pack(side="left")
         
         btn_refresh = ctk.CTkButton(header_frame, text="🔄 Atualizar da Nuvem", fg_color=COR["accent_purple"], command=self.carregar_produtos_nuvem)
         btn_refresh.pack(side="right")
@@ -2759,11 +4669,25 @@ class PainelProdutos(ctk.CTkFrame):
         btn_frame = ctk.CTkFrame(self, fg_color="transparent")
         btn_frame.pack(pady=10)
         
-        ctk.CTkButton(btn_frame, text="🔍 Cruzar com Fornecedores", command=self.cruzar_fornecedores).grid(row=0, column=0, padx=10)
-        ctk.CTkButton(btn_frame, text="📥 Importar Tabela de Distribuidor", command=self.importar_tabela_distribuidor).grid(row=0, column=1, padx=10)
-        ctk.CTkButton(btn_frame, text="📄 Gerar Proposta Comercial", command=self.gerar_proposta_comercial).grid(row=0, column=2, padx=10)
-        ctk.CTkButton(btn_frame, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre).grid(row=0, column=3, padx=10)
+        ctk.CTkButton(btn_frame, text="📄 Abrir em Editais & Custos", font=ctk.CTkFont(weight="bold"), fg_color=COR["accent_cyan"], text_color="#080C14", command=self.selecionar_e_precificar).grid(row=0, column=0, padx=10)
+        ctk.CTkButton(btn_frame, text="🔍 Cruzar com Fornecedores", command=self.cruzar_fornecedores).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(btn_frame, text="📥 Importar Tabela de Distribuidor", command=self.importar_tabela_distribuidor).grid(row=0, column=2, padx=10)
+        ctk.CTkButton(btn_frame, text="📄 Gerar Proposta Comercial", command=self.gerar_proposta_comercial).grid(row=0, column=3, padx=10)
+        ctk.CTkButton(btn_frame, text="🛒 Cotar no Mercado Livre", command=self.cotar_mercado_livre).grid(row=0, column=4, padx=10)
         
+    def selecionar_e_precificar(self):
+        prod = self._get_selected_prod()
+        if not prod: return
+        link = prod.get("link_sistema") or prod.get("link_edital") or ""
+        self.app.selecionar_aba("Editais & Custos")
+        if hasattr(self.app, "painel_editais"):
+            pe = self.app.painel_editais
+            if hasattr(pe, "txt_entrada_rapida"):
+                pe.txt_entrada_rapida.delete(0, "end")
+                pe.txt_entrada_rapida.insert(0, link)
+                if hasattr(pe, "_carregar_direto"):
+                    pe._carregar_direto()
+
     def cotar_mercado_livre(self):
         prod = self._get_selected_prod()
         if not prod: return
@@ -2782,8 +4706,44 @@ class PainelProdutos(ctk.CTkFrame):
                 url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
                 key = os.getenv("SUPABASE_KEY") or ""
                 sb = create_client(url, key)
-                res = sb.table('licitacoes').select('*').eq('tipo_contratacao', 'PRODUTO').order('atualizado_em', desc=True).execute()
-                self.dados_produtos = res.data
+                res = sb.table('licitacoes').select('*').order('atualizado_em', desc=True).limit(200).execute()
+                
+                prod_kws = [
+                    "produto", "produtos", "aquisição", "aquisicao", "fornecimento", "compra",
+                    "material", "materiais", "peça", "peca", "peças", "pecas",
+                    "equipamento", "equipamentos", "computador", "notebook",
+                    "servidor", "switch", "roteador", "nobreak", "toner", "cartucho",
+                    "suprimento", "suprimentos", "cabo", "rack", "cftv", "camera", "câmera",
+                    "periférico", "periferico", "disco", "ssd", "memória", "memoria",
+                    "hardware", "impressora", "scanner", "telecom", "fibra"
+                ]
+                
+                dados = []
+                for lic in (res.data or []):
+                    if not isinstance(lic, dict):
+                        continue
+                    tipo = str(lic.get("tipo_contratacao") or "").upper()
+                    obj = str(lic.get("objeto") or "").lower()
+                    status = str(lic.get("status_analise") or "pendente").lower()
+                    
+                    if status in ["descartada"]:
+                        continue
+
+                    # 1. Se for marcado explicitamente como PRODUTO, MISTO, COMPRA, AQUISICAO ou BEM
+                    if tipo in ["PRODUTO", "MISTO", "COMPRA", "AQUISICAO", "BEM"]:
+                        dados.append(lic)
+                    # 2. Se o objeto envolver fornecimento de materiais, peças, suprimentos e equipamentos TI/Telecom
+                    elif any(kw in obj for kw in prod_kws):
+                        dados.append(lic)
+
+                # Fallback defensivo: se banco tiver apenas registros mistos ou cadastros gerais e dados for vazio,
+                # carrega todos os certames não descartados para garantir que a aba nunca fique em branco
+                if not dados and res.data:
+                    for lic in res.data:
+                        if isinstance(lic, dict) and str(lic.get("status_analise") or "").lower() != "descartada":
+                            dados.append(lic)
+
+                self.dados_produtos = dados
             except Exception as e:
                 print("Erro ao carregar produtos:", e)
                 self.dados_produtos = []
@@ -2885,6 +4845,214 @@ class PainelProdutos(ctk.CTkFrame):
         if resp:
             import subprocess; subprocess.Popen(['xdg-open', pasta_dest])
 
+
+# ─── PAINEL 5: CERTAMES APROVADOS PARA PARTICIPAÇÃO (AGENDA DISPUTAS) ───────────
+class PainelAprovados(ctk.CTkFrame):
+    """
+    Aba 5: 🎯 Aprovados para Participação
+    Exibe a agenda cronológica de certames confirmados para participação com Stop-Loss
+    (status_analise = 'aprovado_disputa').
+    """
+    def __init__(self, master: Any, app: "App", **kwargs: Any) -> None:
+        super().__init__(master, fg_color="transparent", **kwargs)
+        self.app = app
+        self.dados_aprovados: list[dict[str, Any]] = []
+
+        # Header
+        header_frame = ctk.CTkFrame(self, fg_color="transparent")
+        header_frame.pack(fill="x", padx=20, pady=(10, 0))
+        
+        ctk.CTkLabel(
+            header_frame,
+            text="🎯  Agenda de Certames Aprovados para Participação",
+            font=ctk.CTkFont(size=20, weight="bold"),
+            text_color="#10B981",
+        ).pack(side="left")
+
+        btn_refresh = ctk.CTkButton(
+            header_frame,
+            text="🔄 Atualizar Agenda",
+            fg_color="#1E293B",
+            hover_color="#334155",
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            command=self.carregar_aprovados,
+        )
+        btn_refresh.pack(side="right")
+
+        # Tabela Treeview
+        from tkinter import ttk
+        tree_frame = ctk.CTkFrame(self, fg_color="transparent")
+        tree_frame.pack(fill="both", expand=True, padx=20, pady=10)
+
+        cols = ("data_sessao", "orgao", "pregao", "objeto", "valor", "stop_loss", "portal")
+        self.tree_aprovados = ttk.Treeview(tree_frame, columns=cols, show="headings", height=12)
+        
+        self.tree_aprovados.heading("data_sessao", text="📅 Data / Horário Disputa")
+        self.tree_aprovados.heading("orgao", text="🏛️ Órgão")
+        self.tree_aprovados.heading("pregao", text="📋 Pregão")
+        self.tree_aprovados.heading("objeto", text="📝 Objeto")
+        self.tree_aprovados.heading("valor", text="💰 Valor Estimado")
+        self.tree_aprovados.heading("stop_loss", text="🛑 Stop-Loss Aprovado")
+        self.tree_aprovados.heading("portal", text="🌐 Portal")
+
+        self.tree_aprovados.column("data_sessao", width=180, anchor="center")
+        self.tree_aprovados.column("orgao", width=220, anchor="w")
+        self.tree_aprovados.column("pregao", width=110, anchor="center")
+        self.tree_aprovados.column("objeto", width=320, anchor="w")
+        self.tree_aprovados.column("valor", width=130, anchor="e")
+        self.tree_aprovados.column("stop_loss", width=140, anchor="e")
+        self.tree_aprovados.column("portal", width=110, anchor="center")
+
+        self.tree_aprovados.tag_configure("evenrow", background="#181A20", foreground="#FFFFFF")
+        self.tree_aprovados.tag_configure("oddrow", background="#22242A", foreground="#FFFFFF")
+        self.tree_aprovados.pack(fill="both", expand=True)
+
+        # Barra de Ações Inferior
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=10)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="⚡ Enviar p/ Console da Sessão",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color=COR["accent_cyan"],
+            text_color="#080C14",
+            hover_color="#06B6D4",
+            height=34,
+            command=self._enviar_para_sessao,
+        ).pack(side="left", padx=(0, 10))
+
+        ctk.CTkButton(
+            btn_frame,
+            text="📄 Rever em Editais & Custos",
+            font=ctk.CTkFont(size=12, weight="bold"),
+            fg_color="#334155",
+            text_color="#FFFFFF",
+            hover_color="#475569",
+            height=34,
+            command=self._rever_em_editais,
+        ).pack(side="left", padx=10)
+
+        ctk.CTkButton(
+            btn_frame,
+            text="🌐 Abrir Sala / Link",
+            font=ctk.CTkFont(size=12),
+            fg_color="transparent",
+            text_color="#38BDF8",
+            border_width=1,
+            border_color="#38BDF8",
+            hover_color="#1E293B",
+            height=34,
+            command=self._abrir_link_certame,
+        ).pack(side="left", padx=10)
+
+        self.after(500, self.carregar_aprovados)
+
+    def carregar_aprovados(self) -> None:
+        import threading
+        def worker():
+            try:
+                import os
+                from supabase import create_client
+                url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+                key = os.getenv("SUPABASE_KEY") or ""
+                sb = create_client(url, key)
+                res = sb.table("licitacoes").select("*").eq("status_analise", "aprovado_disputa").order("atualizado_em", desc=True).execute()
+                dados = res.data or []
+                self.dados_aprovados = dados
+            except Exception as e:
+                logger.warning(f"Erro ao carregar aprovados do Supabase: {e}")
+                self.dados_aprovados = []
+            self.after(0, self._exibir_aprovados)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _exibir_aprovados(self) -> None:
+        for r in self.tree_aprovados.get_children():
+            self.tree_aprovados.delete(r)
+
+        # Ordenação inteligente: os que abrem mais cedo primeiro
+        lista_ordenada = []
+        for item in self.dados_aprovados:
+            if not isinstance(item, dict): continue
+            crono = PainelDashboard._extrair_cronograma_licitacao(item)
+            lista_ordenada.append((item, crono))
+
+        def chave_cronograma(par):
+            _, c = par
+            st = c["prazo_status"]
+            if st == "hoje": return (0, c["dias_restantes"])
+            elif st == "amanha": return (1, c["dias_restantes"])
+            elif st == "48h": return (2, c["dias_restantes"])
+            elif st == "aberto": return (3, c["dias_restantes"])
+            else: return (4, c["dias_restantes"])
+
+        lista_ordenada.sort(key=chave_cronograma)
+        self.dados_aprovados = [p[0] for p in lista_ordenada]
+
+        for i, (lic, crono) in enumerate(lista_ordenada):
+            data_str = crono["txt_abertura"] or crono["txt_encerramento"]
+            if crono["prazo_status"] == "hoje":
+                data_str = f"🚨 HOJE: {data_str}"
+            elif crono["prazo_status"] == "amanha":
+                data_str = f"⚡ AMANHÃ: {data_str}"
+
+            uf = lic.get("uf", "BR")
+            orgao = f"[{uf}] " + str(lic.get("orgao_nome") or "")[:28]
+            pregao = str(lic.get("numero_pregao") or "S/N")
+            objeto = str(lic.get("objeto") or "")[:60]
+            val_est = float(lic.get("valor_estimado") or 0.0)
+            val_str = f"R$ {val_est:,.2f}"
+            stop = float(lic.get("stop_loss") or (val_est * 0.85))
+            stop_str = f"R$ {stop:,.2f}"
+            portal = str(lic.get("portal") or "COMPRAS_GOV")
+
+            tag = "evenrow" if i % 2 == 0 else "oddrow"
+            self.tree_aprovados.insert("", "end", iid=str(i), values=(data_str, orgao, pregao, objeto, val_str, stop_str, portal), tags=(tag,))
+
+    def _get_selected(self) -> Optional[dict[str, Any]]:
+        sel = self.tree_aprovados.selection()
+        if not sel:
+            import tkinter.messagebox as messagebox
+            messagebox.showwarning("Aviso", "Selecione um certame aprovado na agenda primeiro.")
+            return None
+        return self.dados_aprovados[int(sel[0])]
+
+    def _enviar_para_sessao(self) -> None:
+        lic = self._get_selected()
+        if not lic: return
+        self.app.licitacao_ativa = lic
+        self.app.definir_licitacao_ativa(lic)
+        self.app.selecionar_aba("⚡  Console da Sessão")
+        if hasattr(self.app, "painel_sessao"):
+            pregao = lic.get("numero_pregao") or ""
+            self.app.painel_sessao.carregar_licitacao_disputa(pregao)
+
+    def _rever_em_editais(self) -> None:
+        lic = self._get_selected()
+        if not lic: return
+        link = lic.get("link_sistema") or lic.get("link_edital") or ""
+        self.app.selecionar_aba("Editais & Custos")
+        if hasattr(self.app, "painel_editais"):
+            pe = self.app.painel_editais
+            if hasattr(pe, "txt_entrada_rapida"):
+                pe.txt_entrada_rapida.delete(0, "end")
+                pe.txt_entrada_rapida.insert(0, link)
+                if hasattr(pe, "_carregar_direto"):
+                    pe._carregar_direto()
+
+    def _abrir_link_certame(self) -> None:
+        lic = self._get_selected()
+        if not lic: return
+        import webbrowser
+        link = lic.get("link_sistema") or lic.get("link_edital") or ""
+        if link and link.startswith("http"):
+            webbrowser.open(link)
+        else:
+            import tkinter.messagebox as messagebox
+            messagebox.showinfo("Link", "Certame não possui link direto cadastrado.")
+
+
 class App(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
@@ -2914,6 +5082,8 @@ class App(ctk.CTk):
         # Atualiza a interface
         self.painel_dashboard.atualizar_catalogo()
         self.painel_editais.atualizar_lista_certames()
+        if hasattr(self, "painel_aprovados"):
+            self.painel_aprovados.carregar_aprovados()
         self.painel_sessao.atualizar_seletor_disputa()
 
         messagebox.showinfo("Licitação Adicionada", f"✅ '{nome_chave}' adicionada com sucesso!\nTotal de certames ativos hoje: {len(self.catalogo_licitacoes)}")
@@ -2938,11 +5108,13 @@ class App(ctk.CTk):
         lbl_logo.grid(row=0, column=0, padx=16, pady=(16, 20), sticky="w")
 
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
+        # 6 Abas Oficiais do Fluxo JRBC TECH
         abas = [
             ("📊  Dashboard", "dashboard"),
             ("🛠️  Serviços", "servicos"),
-            ("📦  Venda de Produtos", "produtos"),
+            ("📦  Serviço com Produtos", "produtos"),
             ("📄  Editais & Custos", "editais"),
+            ("🎯  Aprovados para Participação", "aprovados"),
             ("⚡  Console da Sessão", "sessao"),
         ]
 
@@ -2971,18 +5143,20 @@ class App(ctk.CTk):
         self.tab_container.grid_rowconfigure(0, weight=1)
         self.tab_container.grid_columnconfigure(0, weight=1)
 
-        # Painéis
+        # Painéis Oficiais do Fluxo
         self.painel_dashboard = PainelDashboard(self.tab_container, app=self)
         self.painel_servicos = PainelServicos(self.tab_container, app=self)
         self.painel_produtos = PainelProdutos(self.tab_container, app=self)
         self.painel_editais = PainelEditais(self.tab_container, app=self)
+        self.painel_aprovados = PainelAprovados(self.tab_container, app=self)
         self.painel_sessao = PainelSessao(self.tab_container, app=self)
         self.painel_pncp = PainelPNCP(self.tab_container, app=self)
 
         self._paineis["📊  Dashboard"] = self.painel_dashboard
         self._paineis["🛠️  Serviços"] = self.painel_servicos
-        self._paineis["📦  Venda de Produtos"] = self.painel_produtos
+        self._paineis["📦  Serviço com Produtos"] = self.painel_produtos
         self._paineis["📄  Editais & Custos"] = self.painel_editais
+        self._paineis["🎯  Aprovados para Participação"] = self.painel_aprovados
         self._paineis["⚡  Console da Sessão"] = self.painel_sessao
 
         for p in self._paineis.values():
@@ -2991,14 +5165,24 @@ class App(ctk.CTk):
         self.selecionar_aba("📊  Dashboard")
 
     def selecionar_aba(self, nome_aba: str) -> None:
+        chave_alvo = nome_aba
+        for chave in self._paineis:
+            if nome_aba.lower() in chave.lower():
+                chave_alvo = chave
+                break
+
         for n, btn in self._nav_buttons.items():
-            if n == nome_aba:
+            if n == chave_alvo:
                 btn.configure(fg_color=COR["accent_cyan"], text_color="#080C14")
             else:
                 btn.configure(fg_color="transparent", text_color=COR["text_secondary"])
 
-        if nome_aba in self._paineis:
-            self._paineis[nome_aba].tkraise()
+        if chave_alvo in self._paineis:
+            self._paineis[chave_alvo].tkraise()
+
+    def mudar_aba(self, nome_aba: str) -> None:
+        """Alias flexível para alternar abas com segurança."""
+        self.selecionar_aba(nome_aba)
 
     def log(self, nivel: str, msg: str) -> None:
         logger.info(f"[{nivel}] {msg}")

@@ -171,7 +171,8 @@ class SigaMonitor:
             "status": "pendente",
             "status_analise": "NOVA",
             "portal": "SIGA_TO",
-            "prioridade": "MEDIA"
+            "prioridade": "MEDIA",
+            "atualizado_em": datetime.now().isoformat()
         }
         
         # Tenta formatar data se for DD/MM/YYYY HH:MM
@@ -179,7 +180,7 @@ class SigaMonitor:
         if match_prazo:
             try:
                 dt = datetime.strptime(match_prazo.group(0), "%d/%m/%Y %H:%M")
-                dados_licitacao["data_fim_proposta"] = dt.isoformat()
+                dados_licitacao["data_encerramento"] = dt.isoformat()
             except Exception:
                 pass
                 
@@ -191,6 +192,13 @@ class SigaMonitor:
 
     def classificar_objeto(self, texto: str) -> Optional[str]:
         """Avalia se o objeto corresponde a serviços de TI e não cai em blacklist."""
+        try:
+            from radar_telegram import validar_edital_jrbc
+            if not validar_edital_jrbc(texto):
+                return None
+        except Exception:
+            pass
+
         texto_lower = texto.lower()
 
         # Checa termos negativos
@@ -203,122 +211,170 @@ class SigaMonitor:
             if kw in texto_lower:
                 return kw
 
-        return None
+        return "Serviços TI / Telecom"
 
     async def executar_varredura(self) -> int:
         """Abre o SIGA-TO, intercepta os processos abertos e envia alertas."""
         novas_oportunidades = 0
         logger.info(f"Iniciando varredura no SIGA-TO: {SIGA_ABERTAS_URL}")
 
-        async with async_playwright() as p:
-            import chrome_connector
-            context, is_cdp = await chrome_connector.obter_contexto_navegador(p)
-            if context is None:
-                logger.error("Não foi possível obter contexto do navegador.")
-                return 0
-            page = await chrome_connector.obter_aba_inteligente(context, "siga.to.gov.br")
+        try:
+            async with async_playwright() as p:
+                import chrome_connector
+                context = None
+                is_cdp = False
 
-            # Captura de respostas JSON da API do portal
-            dados_capturados_api: List[Dict[str, Any]] = []
-
-            async def interceptar_resposta(response):
-                url = response.url
-                if ("consulta" in url or "compra" in url or "abertas" in url) and "json" in response.headers.get("content-type", ""):
+                # 1. Dá preferência expressa para conectar via CDP se a porta 9222 já estiver ativa
+                if chrome_connector.is_chrome_running():
                     try:
-                        res_json = await response.json()
-                        if isinstance(res_json, list):
-                            dados_capturados_api.extend(res_json)
-                        elif isinstance(res_json, dict) and "itens" in res_json:
-                            dados_capturados_api.extend(res_json["itens"])
-                        elif isinstance(res_json, dict) and "data" in res_json:
-                            dados_capturados_api.extend(res_json["data"])
+                        logger.info("🔌 Conectando ao Chrome oficial via CDP na porta 9222...")
+                        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+                        context = browser.contexts[0] if browser.contexts else browser
+                        is_cdp = True
+                    except Exception as e_cdp:
+                        logger.warning(f"Falha ao conectar via CDP na porta 9222: {e_cdp}")
+
+                # 2. Se CDP não conectou, recorre a obter_contexto_navegador
+                if context is None:
+                    try:
+                        context, is_cdp = await chrome_connector.obter_contexto_navegador(p)
+                    except Exception as e_ctx:
+                        logger.warning(f"Navegador já em execução ou sessão fechada: {e_ctx}")
+                        return 0
+
+                if context is None:
+                    logger.error("Não foi possível obter contexto do navegador.")
+                    return 0
+
+                try:
+                    page = await chrome_connector.obter_aba_inteligente(context, "siga.to.gov.br")
+                except Exception as e_page:
+                    logger.warning(f"Não foi possível obter aba para o SIGA-TO: {e_page}")
+                    return 0
+
+                # Captura de respostas JSON da API do portal
+                dados_capturados_api: List[Dict[str, Any]] = []
+
+                async def interceptar_resposta(response):
+                    try:
+                        url = response.url
+                        if ("consulta" in url or "compra" in url or "abertas" in url) and "json" in response.headers.get("content-type", ""):
+                            res_json = await response.json()
+                            if isinstance(res_json, list):
+                                dados_capturados_api.extend(res_json)
+                            elif isinstance(res_json, dict) and "itens" in res_json:
+                                dados_capturados_api.extend(res_json["itens"])
+                            elif isinstance(res_json, dict) and "data" in res_json:
+                                dados_capturados_api.extend(res_json["data"])
                     except Exception:
                         pass
 
-            page.on("response", interceptar_resposta)
+                page.on("response", interceptar_resposta)
 
-            try:
-                await page.goto(SIGA_ABERTAS_URL, wait_until="networkidle", timeout=45000)
-                await page.wait_for_timeout(5000)  # Garante renderização Angular/Vue
-            except Exception as e:
-                logger.warning(f"Timeout ao carregar página: {e}. Prosseguindo com leitura...")
-            
-            logger.info(f'URL atual: {page.url}')
+                # Navegação defensiva
+                try:
+                    await page.goto(SIGA_ABERTAS_URL, wait_until="networkidle", timeout=45000)
+                    await page.wait_for_timeout(5000)  # Garante renderização Angular/Vue
+                except Exception as e:
+                    logger.warning(f"Aviso ao carregar {SIGA_ABERTAS_URL}: {e}. Prosseguindo com leitura...")
+                
+                try:
+                    logger.info(f'URL atual: {page.url}')
+                except Exception:
+                    pass
 
-            # 1. Triagem via dados de API interceptados (se houver)
-            if dados_capturados_api:
-                logger.info(f"Interceptados {len(dados_capturados_api)} registros via API.")
-                for item in dados_capturados_api:
-                    num_proc = str(item.get("numeroProcesso") or item.get("numero") or item.get("id") or "")
-                    objeto = str(item.get("objeto") or item.get("descricao") or "")
-                    orgao = str(item.get("orgao") or item.get("nomeOrgao") or "Governo do Tocantins")
-                    data_fim = str(item.get("dataEncerramento") or item.get("dataFim") or "A consultar")
+                # 1. Triagem via dados de API interceptados (se houver)
+                if dados_capturados_api:
+                    logger.info(f"Interceptados {len(dados_capturados_api)} registros via API.")
+                    for item in dados_capturados_api:
+                        num_proc = str(item.get("numeroProcesso") or item.get("numero") or item.get("id") or "")
+                        objeto = str(item.get("objeto") or item.get("descricao") or "")
+                        orgao = str(item.get("orgao") or item.get("nomeOrgao") or "Governo do Tocantins")
+                        data_fim = str(item.get("dataEncerramento") or item.get("dataFim") or "A consultar")
 
-                    if not num_proc or num_proc in self.processos_vistos:
-                        continue
+                        if not num_proc or num_proc in self.processos_vistos:
+                            continue
 
-                    termo = self.classificar_objeto(objeto)
-                    if termo:
-                        link = f"http://siga.to.gov.br/cde/#/fornecedor/detalhes/{num_proc}"
-                        enviado = self.telegram.enviar_oportunidade(
-                            numero_processo=num_proc,
-                            orgao=orgao,
-                            objeto=objeto,
-                            data_fim=data_fim,
-                            link_processo=link,
-                            termo_encontrado=termo,
-                        )
-                        if enviado:
-                            self._salvar_supabase(num_proc, orgao, objeto, data_fim, link)
-                            self.processos_vistos.add(num_proc)
-                            novas_oportunidades += 1
+                        termo = self.classificar_objeto(objeto)
+                        if termo:
+                            link = f"http://siga.to.gov.br/cde/#/fornecedor/detalhes/{num_proc}"
+                            enviado = self.telegram.enviar_oportunidade(
+                                numero_processo=num_proc,
+                                orgao=orgao,
+                                objeto=objeto,
+                                data_fim=data_fim,
+                                link_processo=link,
+                                termo_encontrado=termo,
+                            )
+                            if enviado:
+                                self._salvar_supabase(num_proc, orgao, objeto, data_fim, link)
+                                self.processos_vistos.add(num_proc)
+                                novas_oportunidades += 1
 
-            # 2. Triagem via DOM / Tabela visual
-            linhas = await page.query_selector_all("table tbody tr")
-            logger.info(f"Encontradas {len(linhas)} linhas na tabela visual.")
-            if len(linhas) == 0:
-                await page.screenshot(path='debug_siga.png')
-                logger.info("Screenshot de debug salvo em debug_siga.png")
+                # 2. Triagem via DOM / Tabela visual de forma defensiva
+                try:
+                    linhas = await page.query_selector_all("table tbody tr")
+                    logger.info(f"Encontradas {len(linhas)} linhas na tabela visual.")
+                    if len(linhas) == 0:
+                        try:
+                            await page.screenshot(path='debug_siga.png')
+                            logger.info("Screenshot de debug salvo em debug_siga.png")
+                        except Exception:
+                            pass
 
-            for tr in linhas:
-                texto_linha = await tr.inner_text()
-                colunas = texto_linha.split("\t") if "\t" in texto_linha else texto_linha.split("\n")
-                colunas = [c.strip() for c in colunas if c.strip()]
+                    for tr in linhas:
+                        try:
+                            texto_linha = await tr.inner_text()
+                        except Exception as e_tr:
+                            logger.debug(f"Linha da tabela não pôde ser lida: {e_tr}")
+                            continue
 
-                if len(colunas) >= 3:
-                    # Heurística para identificar processo e objeto nas colunas
-                    num_proc = colunas[0]
-                    orgao = colunas[1] if len(colunas) > 1 else "Órgão Estadual"
-                    objeto = " ".join(colunas[2:])
+                        colunas = texto_linha.split("\t") if "\t" in texto_linha else texto_linha.split("\n")
+                        colunas = [c.strip() for c in colunas if c.strip()]
 
-                    # Extrai número de processo padrão YYYY/NNNNN se presente
-                    match_proc = re.search(r"\d{4}/\d{4,6}", texto_linha)
-                    if match_proc:
-                        num_proc = match_proc.group(0)
+                        if len(colunas) >= 3:
+                            # Heurística para identificar processo e objeto nas colunas
+                            num_proc = colunas[0]
+                            orgao = colunas[1] if len(colunas) > 1 else "Órgão Estadual"
+                            objeto = " ".join(colunas[2:])
 
-                    if num_proc in self.processos_vistos:
-                        continue
+                            # Extrai número de processo padrão YYYY/NNNNN se presente
+                            match_proc = re.search(r"\d{4}/\d{4,6}", texto_linha)
+                            if match_proc:
+                                num_proc = match_proc.group(0)
 
-                    termo = self.classificar_objeto(objeto)
-                    if termo:
-                        data_fim_match = re.search(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", texto_linha)
-                        data_fim = data_fim_match.group(0) if data_fim_match else "Verificar no edital"
+                            if num_proc in self.processos_vistos:
+                                continue
 
-                        enviado = self.telegram.enviar_oportunidade(
-                            numero_processo=num_proc,
-                            orgao=orgao,
-                            objeto=objeto,
-                            data_fim=data_fim,
-                            link_processo=SIGA_ABERTAS_URL,
-                            termo_encontrado=termo,
-                        )
-                        if enviado:
-                            self._salvar_supabase(num_proc, orgao, objeto, data_fim, SIGA_ABERTAS_URL)
-                            self.processos_vistos.add(num_proc)
-                            novas_oportunidades += 1
+                            termo = self.classificar_objeto(objeto)
+                            if termo:
+                                data_fim_match = re.search(r"\d{2}/\d{2}/\d{4} \d{2}:\d{2}", texto_linha)
+                                data_fim = data_fim_match.group(0) if data_fim_match else "Verificar no edital"
 
-            if context:
-                await context.close()
+                                enviado = self.telegram.enviar_oportunidade(
+                                    numero_processo=num_proc,
+                                    orgao=orgao,
+                                    objeto=objeto,
+                                    data_fim=data_fim,
+                                    link_processo=SIGA_ABERTAS_URL,
+                                    termo_encontrado=termo,
+                                )
+                                if enviado:
+                                    self._salvar_supabase(num_proc, orgao, objeto, data_fim, SIGA_ABERTAS_URL)
+                                    self.processos_vistos.add(num_proc)
+                                    novas_oportunidades += 1
+                except Exception as e_dom:
+                    logger.warning(f"Aviso na leitura da tabela visual do SIGA-TO (navegador/página fechada): {e_dom}")
+
+                try:
+                    if context and not is_cdp:
+                        await context.close()
+                except Exception:
+                    pass
+
+        except Exception as e_exec:
+            logger.warning(f"Varredura do SIGA-TO concluída/interrompida com segurança (navegador fechado ou desconectado): {e_exec}")
+
         self._salvar_vistos()
         logger.info(f"Varredura concluída. Novas oportunidades notificadas: {novas_oportunidades}")
         return novas_oportunidades

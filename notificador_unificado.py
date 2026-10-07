@@ -36,6 +36,20 @@ def enviar_alerta_executivo(dados: dict) -> bool:
 
     piso_seguro = float(dados.get("piso_seguro", valor * 0.70 if valor > 0 else 0.0))
     prioridade = html.escape(str(dados.get("prioridade", "NORMAL")))
+    
+    # Formatação de Datas
+    raw_fim = dados.get("data_encerramento") or dados.get("data_fim_proposta") or dados.get("data_fim")
+    raw_abert = dados.get("data_abertura")
+    
+    bloco_datas = ""
+    if raw_fim:
+        fim_str = str(raw_fim)[:16].replace("T", " às ")
+        bloco_datas += f"⏰ <b>Fim das Propostas:</b> {fim_str}\n"
+    if raw_abert:
+        abert_str = str(raw_abert)[:16].replace("T", " às ")
+        bloco_datas += f"🏛️ <b>Abertura / Disputa:</b> {abert_str}\n"
+    if bloco_datas:
+        bloco_datas = "📅 <b>CRONOGRAMA DO CERTAME:</b>\n" + bloco_datas + "\n"
 
     texto = (
         f"{badge}\n"
@@ -44,6 +58,7 @@ def enviar_alerta_executivo(dados: dict) -> bool:
         f"📋 **{modalidade} nº {numero}**\n"
         f"🎯 **Prioridade:** {prioridade}\n"
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{bloco_datas}"
         "📝 **OBJETO DA CONTRATAÇÃO:**\n"
         f"*{objeto}...*\n\n"
         "💰 **FINANCEIRO JRBC TECH:**\n"

@@ -750,6 +750,45 @@ class MotorDecisao:
             "itens_encerrados": sum(1 for e in self._estados.values() if e.encerrado),
         }
 
+    def calcular_contra_lance(
+        self,
+        num_item: str | int,
+        melhor_mercado: Decimal | float,
+        stop_loss: Decimal | float,
+        intervalo_minimo: Decimal | float = Decimal("0.01"),
+    ) -> Optional[Decimal]:
+        """
+        Calcula o contra-lance determinístico respeitando estritamente o stop-loss.
+        """
+        return calcular_contra_lance(num_item, melhor_mercado, stop_loss, intervalo_minimo)
+
+
+def calcular_contra_lance(
+    num_item: str | int,
+    melhor_mercado: Decimal | float,
+    stop_loss: Decimal | float,
+    intervalo_minimo: Decimal | float = Decimal("0.01"),
+) -> Optional[Decimal]:
+    """
+    Calcula o contra-lance mínimo viável respeitando rigorosamente o stop-loss do item.
+    Se o novo lance calculado for estritamente menor que o stop-loss, aborta retornando None.
+    """
+    try:
+        melhor = Decimal(str(melhor_mercado))
+        piso = Decimal(str(stop_loss))
+        degrau = Decimal(str(intervalo_minimo))
+
+        novo_lance = (melhor - degrau).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if novo_lance < piso:
+            logger.warning(
+                f"⛔ [STOP-LOSS] Contra-lance R$ {novo_lance:.2f} violaria piso R$ {piso:.2f} no Item {num_item}. Lance abortado."
+            )
+            return None
+        return novo_lance
+    except Exception as exc:
+        logger.error(f"[ENGINE ERRO] Falha ao calcular contra-lance no Item {num_item}: {exc}")
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 7. Piloto de Disputa em Tempo Real (Operador Inteligente Compras.gov.br)

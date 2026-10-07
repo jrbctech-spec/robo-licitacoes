@@ -38,12 +38,17 @@ class ModalidadePNCPEnum(str, Enum):
 
 
 class ItemCertamePNCP(BaseModel):
-    """Item individual extraído da API do PNCP."""
+    """Item individual extraído da API do PNCP com informações essenciais para disputa."""
     numero_item: int
     descricao: str
     quantidade: float = 1.0
     unidade_medida: str = "UN"
     valor_referencia: Optional[float] = None
+    valor_total: Optional[float] = None
+    custo_real: Optional[float] = None
+    piso_preco: Optional[float] = None
+    criterio_julgamento: Optional[str] = "Menor preço"
+    beneficio_me_epp: Optional[str] = None
     tipo_item: str = "PRODUTO"  # PRODUTO ou SERVICO
 
 
@@ -60,9 +65,27 @@ class CertameMinadoPNCP(BaseModel):
     modo_disputa: str = "aberto"
     data_hora_sessao: Optional[str] = None
     url_certame: str = ""
+    link_sistema_origem: str = ""
     itens: list[ItemCertamePNCP] = Field(default_factory=list)
     arquivos_baixados: list[str] = Field(default_factory=list)
     pasta_certame: str = ""
+
+
+class ResultadoCertamePNCP(tuple):
+    """Estrutura flexível para certame do PNCP compatível com tupla (compra, itens, arquivo) e atributos de objeto."""
+    def __new__(cls, compra: dict, itens: list, arquivo: Optional[str] = None):
+        return super().__new__(cls, (compra, itens, arquivo))
+
+    def __init__(self, compra: dict, itens: list, arquivo: Optional[str] = None):
+        self.compra = compra
+        self.itens = itens
+        self.arquivo = arquivo
+        self.arquivos = [arquivo] if arquivo else []
+        self.objeto = compra.get("objetoCompra") or compra.get("objeto", "")
+        self.orgao_nome = compra.get("orgaoEntidade", {}).get("razaoSocial", "")
+        self.link_sistema = compra.get("linkSistemaOrigem") or ""
+        self.link_sistema_origem = self.link_sistema
+        self.valor_total = compra.get("valorTotalEstimado") or 0.0
 
 
 def identificar_modalidade_pncp(dados_compra: dict[str, Any]) -> ModalidadePNCPEnum:
@@ -86,8 +109,9 @@ def identificar_modalidade_pncp(dados_compra: dict[str, Any]) -> ModalidadePNCPE
 logger = logging.getLogger(__name__)
 
 BASE_URL_PNCP = "https://pncp.gov.br/api/consulta/v1"
+BASE_URL_PNCP_CORE = "https://pncp.gov.br/api/pncp/v1"
 HEADERS_HTTP = {
-    "User-Agent": "RoboLicitacoes/1.0 (Automation Tool)",
+    "User-Agent": "JRBC-RoboLicitacoes/2.0 (suporte@jrbctech.com.br)",
     "Accept": "application/json",
 }
 
@@ -145,49 +169,52 @@ def extrair_params_pncp(url_ou_texto: str) -> tuple[str, str, str]:
 def buscar_compra(cnpj_orgao: str, ano: str, sequencial: str) -> dict[str, Any]:
     """
     Retorna os metadados do certame, modalidade e modo de disputa do PNCP.
-    Endpoint: GET /orgaos/{cnpj}/compras/{ano}/{sequencial}
+    Testa primeiro /api/consulta/v1 e depois /api/pncp/v1.
     """
-    url = f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}"
-    logger.info(f"PNCP buscar_compra: {url}")
+    endpoints = [
+        f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}",
+        f"{BASE_URL_PNCP_CORE}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}",
+    ]
 
-    try:
-        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
-            resp = get_com_retry(client, url)
-            if resp.status_code == 404:
-                logger.warning(f"Compra não encontrada (404): {url}")
-                raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial}")
-            resp.raise_for_status()
-            return resp.json()
-    except httpx.HTTPStatusError as exc:
-        if exc.response and exc.response.status_code == 404:
-            raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial}")
-        logger.error(f"Erro HTTP ao buscar compra no PNCP: {exc}")
-        raise
-    except Exception as exc:
-        logger.error(f"Erro inesperado ao buscar compra no PNCP: {exc}")
-        raise
+    with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+        for url in endpoints:
+            try:
+                resp = get_com_retry(client, url)
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as exc:
+                logger.debug(f"Tentativa falhou em {url}: {exc}")
+
+    raise ValueError(f"Compra não encontrada para {cnpj_orgao}/{ano}/{sequencial} no PNCP")
 
 
 def obter_itens_compra(cnpj_orgao: str, ano: str, sequencial: str) -> list[dict[str, Any]]:
     """
     Extrai todos os itens, quantidades, valores estimados e descrições do PNCP.
-    Endpoint: GET /orgaos/{cnpj}/compras/{ano}/{sequencial}/itens
+    Endpoint prioritário oficial: GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens
+    Fallback: GET /api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/itens
     """
-    url = f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/itens?pagina=1&tamanhoPagina=500"
-    logger.info(f"PNCP obter_itens_compra: {url}")
-    
-    try:
-        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP) as client:
-            resp = get_com_retry(client, url)
-            if resp.status_code == 200:
-                data = resp.json()
-                if isinstance(data, list):
-                    return data
-                elif isinstance(data, dict):
-                    return data.get("result", data.get("itens", []))
-    except Exception as exc:
-        logger.warning(f"Erro ao buscar itens da compra no PNCP: {exc}")
-    
+    endpoints = [
+        f"{BASE_URL_PNCP_CORE}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/itens?pagina=1&tamanhoPagina=500",
+        f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/itens?pagina=1&tamanhoPagina=500",
+    ]
+
+    with httpx.Client(timeout=35.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+        for url in endpoints:
+            try:
+                resp = get_com_retry(client, url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if isinstance(data, list):
+                        logger.info(f"✅ {len(data)} itens obtidos com sucesso do PNCP: {url}")
+                        return data
+                    elif isinstance(data, dict):
+                        itens = data.get("result") or data.get("itens") or data.get("data") or []
+                        logger.info(f"✅ {len(itens)} itens obtidos com sucesso do PNCP: {url}")
+                        return itens
+            except Exception as exc:
+                logger.warning(f"Aviso ao consultar itens no PNCP ({url}): {exc}")
+
     return []
 
 
@@ -198,54 +225,37 @@ def obter_arquivos_edital(
     pasta_destino: str | Path = "downloads",
 ) -> list[str]:
     """
-    Baixa os PDFs oficiais anexados ao processo no PNCP para a pasta destino.
-    Endpoint: GET /orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos
-
-    NOTA: Este endpoint pode retornar 404 se a licitação estiver encerrada ou
-    se o endpoint não estiver disponível na versão da API atual. Nesse caso,
-    retorna lista vazia sem erro fatal.
+    Recupera as URLs oficiais dos documentos e editais anexados ao processo no PNCP.
+    Endpoint prioritário oficial: GET /api/pncp/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos
+    Fallback: GET /api/consulta/v1/orgaos/{cnpj}/compras/{ano}/{sequencial}/arquivos
     """
-    url = f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/arquivos"
-    logger.info(f"PNCP obter_arquivos_edital: {url}")
+    endpoints = [
+        f"{BASE_URL_PNCP_CORE}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/arquivos",
+        f"{BASE_URL_PNCP}/orgaos/{cnpj_orgao}/compras/{ano}/{sequencial}/arquivos",
+    ]
 
-    try:
-        with httpx.Client(timeout=30.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
-            resp = get_com_retry(client, url)
-            if resp.status_code == 404:
-                # Endpoint não existe ou licitação encerrada sem arquivos
-                logger.warning(
-                    f"Endpoint de arquivos não disponível (404) para "
-                    f"{cnpj_orgao}/{ano}/{sequencial}. "
-                    f"Verifique se a licitação ainda está ativa ou se o endpoint "
-                    f"está disponível na versão atual da API PNCP."
-                )
-                return []
-            resp.raise_for_status()
-            arquivos = resp.json()
-    except httpx.HTTPStatusError as exc:
-        if exc.response and exc.response.status_code == 404:
-            logger.warning(f"Endpoint de arquivos não disponível (404): {exc.request.url}")
-            return []
-        logger.error(f"Erro HTTP ao buscar arquivos do PNCP: {exc}")
-        return []
-    except Exception as exc:
-        logger.error(f"Erro inesperado ao buscar arquivos do PNCP: {exc}")
-        return []
+    arquivos = []
+    with httpx.Client(timeout=35.0, headers=HEADERS_HTTP, follow_redirects=True) as client:
+        for url in endpoints:
+            try:
+                resp = get_com_retry(client, url)
+                if resp.status_code == 200:
+                    arquivos = resp.json()
+                    break
+            except Exception as exc:
+                logger.debug(f"Aviso ao consultar arquivos ({url}): {exc}")
 
     if not arquivos:
-        logger.warning("Nenhum arquivo anexado encontrado para este certame no PNCP.")
+        logger.warning(f"Nenhum arquivo anexado encontrado para {cnpj_orgao}/{ano}/{sequencial}.")
         return []
 
-    # Alterado: Não baixa mais arquivos localmente (Mantém no Supabase/Memória)
-    caminhos_baixados: list[str] = []
-    
-    for idx, arq in enumerate(arquivos, 1):
+    caminhos_coletados: list[str] = []
+    for arq in arquivos:
         url_dl = arq.get("url") or arq.get("uri")
         if url_dl:
-            caminhos_baixados.append(url_dl)
-            logger.info(f"🔗 URL do anexo coletada: {url_dl}")
-            
-    return caminhos_baixados
+            caminhos_coletados.append(url_dl)
+
+    return caminhos_coletados
 
 
 def sincronizar_pncp_supabase(cnpj_orgao: str, ano: str, sequencial: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -491,11 +501,104 @@ def minar_e_estruturar_certame(
     )
 
 
+def carregar_certame_pncp(url_ou_texto: str) -> ResultadoCertamePNCP:
+    """
+    Carrega todos os dados essenciais do certame no PNCP com compatibilidade total (tupla e objeto).
+    Retorna ResultadoCertamePNCP com .itens, .compra, .arquivos, .link_sistema, etc.
+    """
+    cnpj, ano, seq = extrair_params_pncp(url_ou_texto)
+    compra = buscar_compra(cnpj, ano, seq)
+    itens_raw = obter_itens_compra(cnpj, ano, seq)
+    arquivos = obter_arquivos_edital(cnpj, ano, seq)
+
+    itens_formatados: list[ItemCertamePNCP] = []
+    for raw in itens_raw:
+        n = int(raw.get("numeroItem") or raw.get("item", 1))
+        d = str(raw.get("descricao") or f"Item {n}")
+        q = float(raw.get("quantidade") or 1.0)
+        u = str(raw.get("unidadeMedida") or "UN").upper()
+        v_unit = raw.get("valorUnitarioEstimado")
+        v_tot = raw.get("valorTotal")
+        v_ref = float(v_unit) if v_unit is not None else (float(v_tot) / q if v_tot and q > 0 else 0.0)
+        v_total = float(v_tot) if v_tot is not None else (v_ref * q)
+
+        custo = v_ref * 0.7 if v_ref > 0 else 0.0
+        piso = v_ref * 0.8 if v_ref > 0 else 0.0
+
+        itens_formatados.append(
+            ItemCertamePNCP(
+                numero_item=n,
+                descricao=d,
+                quantidade=q,
+                unidade_medida=u,
+                valor_referencia=v_ref,
+                valor_total=v_total,
+                custo_real=custo,
+                piso_preco=piso,
+                criterio_julgamento=raw.get("criterioJulgamentoNome", "Menor preço"),
+                beneficio_me_epp=raw.get("tipoBeneficioNome"),
+            )
+        )
+
+    arq_primeiro = arquivos[0] if arquivos else None
+    return ResultadoCertamePNCP(compra, itens_formatados, arq_primeiro)
+
+
+def sincronizar_itens_certame_supabase(cnpj_orgao: str, ano: str, sequencial: str, licitacao_id: str) -> list[dict[str, Any]]:
+    """
+    Busca os itens reais no PNCP e persiste na tabela 'itens_licitacao' do Supabase.
+    """
+    import os
+    from supabase import create_client
+    url = os.getenv("SUPABASE_URL", "https://szphoxostihnpcovyzvx.supabase.co")
+    key = os.getenv("SUPABASE_KEY") or ""
+    if not key:
+        return []
+
+    sb = create_client(url, key)
+    itens_raw = obter_itens_compra(cnpj_orgao, ano, sequencial)
+    salvos = []
+
+    for raw in itens_raw:
+        n = int(raw.get("numeroItem") or raw.get("item", 1))
+        d = str(raw.get("descricao") or f"Item {n}")
+        q = float(raw.get("quantidade") or 1.0)
+        u = str(raw.get("unidadeMedida") or "UN").upper()
+        v_unit = raw.get("valorUnitarioEstimado")
+        v_tot = raw.get("valorTotal")
+        v_ref = float(v_unit) if v_unit is not None else (float(v_tot) / q if v_tot and q > 0 else 0.0)
+
+        custo = v_ref * 0.7 if v_ref > 0 else 0.0
+        piso = v_ref * 0.8 if v_ref > 0 else 0.0
+
+        payload = {
+            "licitacao_id": licitacao_id,
+            "numero_item": n,
+            "descricao": d,
+            "unidade_medida": u,
+            "quantidade": q,
+            "valor_referencia": v_ref,
+            "custo_unitario": custo,
+            "margem_minima_percent": 15.0,
+            "preco_minimo": piso,
+            "preco_inicial_proposta": v_ref * 0.98 if v_ref > 0 else 0.0,
+        }
+        try:
+            res = sb.table("itens_licitacao").upsert(payload, on_conflict="licitacao_id,numero_item").execute()
+            if res.data:
+                salvos.extend(res.data)
+        except Exception as e:
+            logger.warning(f"Erro ao salvar item {n} no Supabase: {e}")
+
+    logger.info(f"✅ Sincronizados {len(salvos)} itens no Supabase para a licitação {licitacao_id}")
+    return salvos
+
+
 # Alias retrocompatíveis
 consultar_compra_pncp = buscar_compra
 consultar_itens_pncp = obter_itens_compra
 consultar_arquivos_pncp = lambda cnpj, ano, seq: [{"url": u} for u in obter_arquivos_edital(cnpj, ano, seq)]
 baixar_edital_pncp = lambda cnpj, ano, seq, pasta="downloads_editais": (obter_arquivos_edital(cnpj, ano, seq, pasta) or [None])[0]
-carregar_certame_pncp = lambda url: (buscar_compra(*extrair_params_pncp(url)), obter_itens_compra(*extrair_params_pncp(url)), (obter_arquivos_edital(*extrair_params_pncp(url)) or [None])[0])
+
 
 

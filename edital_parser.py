@@ -946,7 +946,12 @@ class EditalParser:
             from google import genai
             from google.genai import types
 
-            client = genai.Client(api_key=api_key)
+            client = genai.Client(
+                api_key=api_key,
+                http_options=types.HttpOptions(
+                    client_args={"timeout": 45.0},
+                ),
+            )
 
             prompt = (
                 "Você é um especialista em licitações públicas brasileiras (Compras.gov.br / PNCP).\n"
@@ -1080,7 +1085,15 @@ class EditalParser:
                     pass
 
             if response and response.text:
-                data = json.loads(response.text)
+                texto_limpo = response.text.strip()
+                if texto_limpo.startswith("```"):
+                    texto_limpo = re.sub(r"^```(?:json)?\s*", "", texto_limpo)
+                    texto_limpo = re.sub(r"\s*```$", "", texto_limpo)
+                try:
+                    data = json.loads(texto_limpo)
+                except Exception as exc_j:
+                    logger.warning(f"Aviso: resposta do Gemini não é JSON puro no edital_parser: {exc_j}")
+                    data = {}
                 itens_json = (
                     data.get("itens", [])
                     if isinstance(data, dict)
