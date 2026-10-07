@@ -101,7 +101,9 @@ def varredura_pncp():
                 if data_encerramento:
                     dados["data_encerramento"] = data_encerramento
                     
-                inserir_licitacao(dados)
+                from supabase_client import get_client
+                sb = get_client()
+                sb.table("licitacoes").upsert(dados, on_conflict="numero_controle_pncp").execute()
                 novas += 1
         except Exception as e:
             logger.error(f"Erro ao salvar PNCP no banco: {e}")

@@ -24,14 +24,12 @@ DRIVE_BASE_DIR = Path(os.getenv("DRIVE_BASE_DIR", os.path.expanduser("~/Google D
 DRIVE_ROOT_DIR = Path(os.path.expanduser("~/Google Drive"))
 
 MODELOS_GEMINI = [
-    "gemini-3.8-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3-flash-preview",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
 ]
 
-# Timeout estendido para análise de editais densos (evita Read timed out)
-TIMEOUT_GEMINI = int(os.getenv("GEMINI_TIMEOUT", "45"))
+# Timeout otimizado para modelo rápido oficial (15s)
+TIMEOUT_GEMINI = int(os.getenv("GEMINI_TIMEOUT", "15"))
 
 
 def extrair_id_drive(url: str) -> Optional[str]:
@@ -387,10 +385,16 @@ def _vistoria_local_fallback(dados_processo: dict, itens: list[dict]) -> dict[st
 
     limite_inexequivel = total_ref * 0.50
 
-    parecer = (
-        f"✅ Vistoria Técnica Prévia Concluída: {len(itens_atualizados)} item(ns) analisado(s). "
-        f"Valor de Referência Total estimado em R$ {total_ref:,.2f} com Custo Real de R$ {total_custo:,.2f}. "
-        f"Piso Stop-Loss global recomendado: R$ {total_stop:,.2f} (Garantindo margem operacional mínima de 20-25%)."
+    parecer_estruturado = (
+        f"📋 VIABILIDADE TÉCNICA E FINANCEIRA:\n"
+        f"Vistoria Técnica Prévia Concluída para {len(itens_atualizados)} item(ns). "
+        f"Valor de Referência Total estimado em R$ {total_ref:,.2f} com Custo Operacional de R$ {total_custo:,.2f}.\n\n"
+        f"⚖️ PRESUNÇÃO DE INEXEQUIBILIDADE:\n"
+        f"Lances globais abaixo de R$ {limite_inexequivel:,.2f} (50% do orçado) são presuntivamente inexequíveis (Art. 59 §4º da Lei 14.133). Não cobrir nessa faixa.\n\n"
+        f"🛑 STOP-LOSS RECOMENDADO:\n"
+        f"Piso Stop-Loss Inviolável da JRBC TECH fixado em R$ {total_stop:,.2f} (assegurando margem operacional de 20-25%).\n\n"
+        f"🎯 TÁTICA DE DISPUTA:\n"
+        f"Aguardar a fase final dos lances e tempo randômico para cobrir propostas com margem líquida positiva."
     )
 
     alertas = [
@@ -402,7 +406,7 @@ def _vistoria_local_fallback(dados_processo: dict, itens: list[dict]) -> dict[st
     return {
         "status_vistoria": "CONCLUIDA",
         "badge": "🟢 VIÁVEL COM MARGEM SEGURA",
-        "parecer_resumido": parecer,
+        "parecer_resumido": parecer_estruturado,
         "pontos_atencao": alertas,
         "itens_atualizados": itens_atualizados,
         "total_referencia": total_ref,
@@ -411,19 +415,108 @@ def _vistoria_local_fallback(dados_processo: dict, itens: list[dict]) -> dict[st
     }
 
 
+def limpar_e_estruturar_parecer(texto: str, dados_extra: Optional[dict[str, Any]] = None) -> str:
+    """
+    Remove estritamente qualquer linha inicial em inglês ou rascunho ('Let's suggest', etc.)
+    e formata o parecer exclusivamente nas seções padronizadas:
+    - Viabilidade Técnica e Financeira
+    - Presunção de Inexequibilidade
+    - Stop-Loss Recomendado
+    - Tática de Disputa
+    """
+    if not texto:
+        texto = ""
+
+    # Remove linhas de pensamento e termos em inglês como 'Let's suggest', 'Let's set', etc.
+    linhas = texto.splitlines()
+    linhas_filtradas: list[str] = []
+    padrao_rascunho = re.compile(
+        r"^\s*(?:let\'?s\s+(?:suggest|set|calculate|analyze|start|consider|look|use|put)|"
+        r"thinking\s+process|thought:|thoughts?:|here\s+is|sure,|okay,|ok,|first,|we\s+can\s+see|"
+        r"the\s+user\s+wants|i\s+will|based\s+on\s+the\s+prompt|in\s+this\s+case|let\s+me)\b",
+        re.IGNORECASE
+    )
+    for l in linhas:
+        if padrao_rascunho.search(l.strip()):
+            continue
+        linhas_filtradas.append(l)
+
+    texto_limpo = "\n".join(linhas_filtradas).strip()
+
+    # Se já estiver perfeitamente estruturado com as 4 seções
+    secoes_alvo = [
+        "viabilidade técnica e financeira",
+        "presunção de inexequibilidade",
+        "stop-loss recomendado",
+        "tática de disputa"
+    ]
+    if all(s in texto_limpo.lower() for s in secoes_alvo):
+        return texto_limpo
+
+    # Monta a estrutura elegante padronizada caso a IA tenha retornado texto livre
+    extra = dados_extra or {}
+    total_ref = float(extra.get("total_referencia") or 0.0)
+    total_custo = float(extra.get("total_custo") or (total_ref * 0.65 if total_ref > 0 else 0.0))
+    total_stop = float(extra.get("total_stop_loss") or (total_ref * 0.85 if total_ref > 0 else 0.0))
+    limite_inex = total_ref * 0.50 if total_ref > 0 else 0.0
+
+    viabilidade_txt = texto_limpo if texto_limpo else "Certame analisado conforme a Lei 14.133/2021 e modelo de custos da JRBC TECH."
+    inex_txt = f"Lances abaixo de R$ {limite_inex:,.2f} (50% do valor de referência) são presuntivamente inexequíveis (Art. 59 §4º). Não cobrir nessa faixa." if limite_inex > 0 else "Observar o patamar de 50% dos custos orçados para evitar presunção de inexequibilidade (Art. 59 §4º da Lei 14.133)."
+    stop_txt = f"Piso Stop-Loss Inviolável da JRBC TECH fixado em R$ {total_stop:,.2f} (assegurando margem mínima de 15% a 25%)." if total_stop > 0 else "Definir margem mínima de 20% sobre custos comprovados."
+    tatica_txt = "Aguardar a fase de prorrogação e minutos finais do tempo randômico para contrapor propostas viáveis sem antecipar o piso."
+
+    # Aproveita detalhes dos pontos de atenção se disponíveis
+    pontos = extra.get("pontos_atencao", [])
+    if isinstance(pontos, list):
+        for p in pontos:
+            p_str = str(p)
+            if "inexequi" in p_str.lower():
+                inex_txt = p_str
+            elif "stop" in p_str.lower() or "piso" in p_str.lower():
+                stop_txt = p_str
+            elif "tática" in p_str.lower() or "tatica" in p_str.lower() or "lance" in p_str.lower():
+                tatica_txt = p_str
+
+    return (
+        f"📋 VIABILIDADE TÉCNICA E FINANCEIRA:\n{viabilidade_txt}\n\n"
+        f"⚖️ PRESUNÇÃO DE INEXEQUIBILIDADE:\n{inex_txt}\n\n"
+        f"🛑 STOP-LOSS RECOMENDADO:\n{stop_txt}\n\n"
+        f"🎯 TÁTICA DE DISPUTA:\n{tatica_txt}"
+    )
+
+
 def realizar_vistoria_previa_gemini(dados_processo: dict, itens: list[dict]) -> dict[str, Any]:
     """
     Executa Vistoria Prévia e Análise Comparativa Tática via Gemini AI
     conforme Lei 14.133/2021 e modelo de operação da JRBC TECH.
+    Possui cache instantâneo no Supabase e resposta estritamente em Português.
     """
-    load_dotenv(override=True)
-    chave = os.getenv("GEMINI_API_KEY")
-
     lic = dados_processo.get("licitacao", {})
     orgao = lic.get("orgao_nome") or "Órgão Licitante"
     objeto = lic.get("objeto") or "Contratação de Serviços / Aquisição"
     num_pregao = lic.get("numero_pregao") or "S/N"
     pasta_nome = dados_processo.get("nome_pasta") or ""
+    lic_id = lic.get("id")
+
+    # 1. CACHE INSTANTÂNEO DO SUPABASE: Se já possuir parecer gravado em 'observacoes', retorna imediatamente
+    parecer_banco = str(lic.get("observacoes") or "").strip()
+    if parecer_banco and len(parecer_banco) > 40 and not parecer_banco.lower().startswith("teste"):
+        logger.info(f"⚡ Vistoria técnica recuperada instantaneamente do CACHE Supabase para '{num_pregao}'.")
+        fallback_cache = _vistoria_local_fallback(dados_processo, itens)
+        parecer_limpo_cache = limpar_e_estruturar_parecer(parecer_banco, fallback_cache)
+        return {
+            "status_vistoria": "CONCLUIDA",
+            "badge": "🟢 VISTORIA TÉCNICA (CACHE NUVEM)",
+            "parecer_resumido": parecer_limpo_cache,
+            "pontos_atencao": fallback_cache["pontos_atencao"],
+            "itens_atualizados": fallback_cache["itens_atualizados"],
+            "total_referencia": fallback_cache["total_referencia"],
+            "total_custo": fallback_cache["total_custo"],
+            "total_stop_loss": fallback_cache["total_stop_loss"],
+        }
+
+    load_dotenv(override=True)
+    chave = os.getenv("GEMINI_API_KEY")
 
     if not chave:
         return _vistoria_local_fallback(dados_processo, itens)
@@ -431,6 +524,8 @@ def realizar_vistoria_previa_gemini(dados_processo: dict, itens: list[dict]) -> 
     prompt = f"""
 Você é o Especialista Sênior em Licitações Públicas e Engenharia de Custos da JRBC TECH (CNPJ: 65.488.003/0001-61 - Palmas/TO).
 Realize a VISTORIA PRÉVIA & ANÁLISE COMPARATIVA deste certame antes de irmos para a disputa ao vivo no pregão.
+
+Responda ESTRITAMENTE em Português do Brasil. Jamais inclua rascunhos, pensamentos ou frases em inglês como 'Let\'s suggest' ou 'Let\'s set'. Retorne apenas o parecer técnico formatado.
 
 DADOS DO CERTAME / PASTA DO GOOGLE DRIVE:
 - Pasta: {pasta_nome}
@@ -444,12 +539,18 @@ DIRETRIZES DA LEI 14.133/2021 E JRBC TECH:
 1. Analise a exequibilidade (Art. 59 §4º da Lei 14.133: lances < 50% do valor orçado).
 2. Se o valor de referência estiver R$ 0,00 ou sigiloso, calcule uma estimativa de mercado coerente com o objeto e sugira Custo Real e Stop-Loss (piso inviolável da empresa).
 3. Garanta margem de lucro líquido mínima segura de 15% a 25%.
-4. Seja direto, técnico e profissional.
+4. Seja direto, técnico e profissional em Português do Brasil.
+
+O parecer_resumido DEVE conter exclusivamente as 4 seções estruturadas:
+• Viabilidade Técnica e Financeira
+• Presunção de Inexequibilidade
+• Stop-Loss Recomendado
+• Tática de Disputa
 
 Responda ESTRITAMENTE em formato JSON válido:
 {{
-  "badge": "🟢 VIÁVEL COM MARGEM SEGURA" (ou ⚠️ ATENÇÃO: VALOR SIGILOSO / RISCO),
-  "parecer_resumido": "Texto conciso de 2 a 3 frases sintetizando a vistoria prévia e se vale a pena disputar",
+  "badge": "🟢 VIÁVEL COM MARGEM SEGURA",
+  "parecer_resumido": "Texto estruturado com as 4 seções em português",
   "pontos_atencao": [
     "Ponto 1 sobre risco de edital ou exigência técnica",
     "Ponto 2 sobre limite de inexequibilidade Art. 59 §4º",
@@ -488,9 +589,9 @@ Responda ESTRITAMENTE em formato JSON válido:
                     try:
                         parsed = json.loads(json_str)
                     except Exception as exc_json:
-                        logger.warning(f"Aviso: resposta do Gemini ({modelo}) não é JSON puro: {exc_json}. Usando fallback textual elegante.")
+                        logger.warning(f"Aviso: resposta do Gemini ({modelo}) não é JSON puro: {exc_json}. Usando fallback.")
                         fallback = _vistoria_local_fallback(dados_processo, itens)
-                        fallback["parecer_resumido"] = f"Análise Técnica (IA):\n{raw_txt[:400]}"
+                        fallback["parecer_resumido"] = limpar_e_estruturar_parecer(raw_txt, fallback)
                         return fallback
 
                     # Ajusta itens com base no parecer da IA
@@ -506,15 +607,36 @@ Responda ESTRITAMENTE em formato JSON válido:
                         itens_ajustados[0]["stop_loss"] = s_sug
                         itens_ajustados[0]["margem"] = m_sug
 
-                    return {
-                        "status_vistoria": "CONCLUIDA",
-                        "badge": parsed.get("badge") or "🟢 VISTORIA IA APROVADA",
-                        "parecer_resumido": parsed.get("parecer_resumido") or fallback["parecer_resumido"],
-                        "pontos_atencao": parsed.get("pontos_atencao") or fallback["pontos_atencao"],
-                        "itens_atualizados": itens_ajustados,
+                    dados_calc = {
                         "total_referencia": fallback["total_referencia"],
                         "total_custo": c_sug if c_sug > 0 else fallback["total_custo"],
                         "total_stop_loss": s_sug if s_sug > 0 else fallback["total_stop_loss"],
+                        "pontos_atencao": parsed.get("pontos_atencao") or fallback["pontos_atencao"],
+                    }
+                    parecer_final = limpar_e_estruturar_parecer(parsed.get("parecer_resumido") or fallback["parecer_resumido"], dados_calc)
+
+                    # Salva no cache do Supabase em background se tivermos ID
+                    if lic_id:
+                        def _salvar_cache_nuvem():
+                            try:
+                                from supabase_client import get_client
+                                sb = get_client()
+                                sb.table("licitacoes").update({"observacoes": parecer_final}).eq("id", str(lic_id)).execute()
+                                logger.info(f"💾 Parecer da IA salvo no cache do Supabase para {lic_id}.")
+                            except Exception as e_sb:
+                                logger.warning(f"Não foi possível salvar cache da vistoria no Supabase: {e_sb}")
+                        import threading
+                        threading.Thread(target=_salvar_cache_nuvem, daemon=True).start()
+
+                    return {
+                        "status_vistoria": "CONCLUIDA",
+                        "badge": parsed.get("badge") or "🟢 VISTORIA IA APROVADA",
+                        "parecer_resumido": parecer_final,
+                        "pontos_atencao": dados_calc["pontos_atencao"],
+                        "itens_atualizados": itens_ajustados,
+                        "total_referencia": dados_calc["total_referencia"],
+                        "total_custo": dados_calc["total_custo"],
+                        "total_stop_loss": dados_calc["total_stop_loss"],
                     }
         except requests.Timeout as exc_timeout:
             logger.warning(f"Timeout ({TIMEOUT_GEMINI}s) ao consultar Gemini ({modelo}): {exc_timeout}")

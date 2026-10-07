@@ -34,9 +34,10 @@ downloads_editais/
 editais/
 scratch/
 
-# Logs do sistema
+# Logs e screenshots de debug
 *.log
 logs/
+debug_*.png
 
 # IDEs e editores
 .vscode/

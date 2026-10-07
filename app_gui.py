@@ -549,19 +549,16 @@ class PainelDashboard(ctk.CTkFrame):
 
         cards_frame = ctk.CTkFrame(self, fg_color="transparent")
         cards_frame.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 12))
-        cards_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+        cards_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         self.card_radar_pncp = MetricCard(cards_frame, titulo="Radar PNCP", valor_inicial="0", subtitulo="Certames Identificados", cor_destaque=COR["accent_cyan"], icone="🌐")
         self.card_radar_pncp.grid(row=0, column=0, padx=(0, 6), sticky="ew")
 
-        self.card_servicos_ti = MetricCard(cards_frame, titulo="Serviços de TI", valor_inicial="0", subtitulo="Para JRBC TECH", cor_destaque=COR["accent_purple"], icone="🛠️")
-        self.card_servicos_ti.grid(row=0, column=1, padx=6, sticky="ew")
-
         self.card_volume = MetricCard(cards_frame, titulo="Volume Total", valor_inicial="R$ 0,00", subtitulo="Estimado Disponível", cor_destaque=COR["accent_green"], icone="💰")
-        self.card_volume.grid(row=0, column=2, padx=6, sticky="ew")
+        self.card_volume.grid(row=0, column=1, padx=6, sticky="ew")
 
         self.card_status = MetricCard(cards_frame, titulo="Status do Sistema", valor_inicial="Online", subtitulo="SIGA-TO & TG Conectados", cor_destaque=COR["accent_blue"], icone="⚡")
-        self.card_status.grid(row=0, column=3, padx=(6, 0), sticky="ew")
+        self.card_status.grid(row=0, column=2, padx=(6, 0), sticky="ew")
 
         main_content = ctk.CTkFrame(self, fg_color="transparent")
         
@@ -1146,7 +1143,8 @@ class PainelDashboard(ctk.CTkFrame):
                 ).pack(side="left", padx=10, pady=4)
 
         self.card_radar_pncp.atualizar(str(total_hoje))
-        self.card_servicos_ti.atualizar(str(participando))
+        if hasattr(self, "card_servicos_ti"):
+            self.card_servicos_ti.atualizar(str(participando))
 
     def _mover_para_servicos(self, lic: dict) -> None:
         lic_id = lic.get("id")
@@ -1608,10 +1606,36 @@ class PainelEditais(ctk.CTkFrame):
         sel = self.tree_itens.selection()
         if not sel:
             import tkinter.messagebox as messagebox
-            messagebox.showwarning("Aviso", "Selecione um item do edital primeiro.")
+            messagebox.showwarning("Aviso", "Selecione um item do edital na tabela primeiro.")
             return
-        if hasattr(self, "licitacao_ativa"):
-            cotar_no_ml_gui(self, self.licitacao_ativa)
+
+        prod_alvo = None
+        try:
+            valores = self.tree_itens.item(sel[0], "values")
+            # cols: ("num", "desc", "qtd", "un", "val_ref", "custo", "margem", "piso")
+            if valores and len(valores) >= 5:
+                num_item = int(valores[0]) if str(valores[0]).isdigit() else 1
+                desc_item = str(valores[1])
+                val_ref_str = str(valores[4]).replace("R$", "").replace(".", "").replace(",", ".").strip()
+                val_ref = float(val_ref_str) if val_ref_str else 0.0
+                lic_ref = getattr(self, "licitacao_ativa", {}) or {}
+                prod_alvo = {
+                    "id": lic_ref.get("id"),
+                    "numero_controle_pncp": lic_ref.get("numero_controle_pncp"),
+                    "numero_item": num_item,
+                    "descricao": desc_item,
+                    "objeto": desc_item,
+                    "valor_referencia": val_ref,
+                    "valor_estimado": val_ref,
+                }
+        except Exception as e_sel:
+            logger.warning(f"Erro ao extrair item da tabela para cotação: {e_sel}")
+
+        if not prod_alvo:
+            prod_alvo = getattr(self, "licitacao_ativa", {})
+
+        from mercadolivre_gui import cotar_no_ml_gui
+        cotar_no_ml_gui(self, prod_alvo)
 
 
     def atualizar_lista_certames(self) -> None:
@@ -2261,12 +2285,7 @@ class PainelEditais(ctk.CTkFrame):
             messagebox.showwarning("Atenção", "Selecione uma licitação primeiro para aprovar a participação.")
             return
 
-        lic_id = lic.get("id")
-        if not lic_id:
-            import tkinter.messagebox as messagebox
-            messagebox.showwarning("Aviso", "Esta licitação não possui ID válido cadastrado no Supabase.")
-            return
-
+        lic_id = lic.get("id") or getattr(self, "licitacao_id", None)
         itens = getattr(self, "itens_carregados", []) or getattr(self, "itens_ativos", []) or []
         
         # 1. Calcula o stop loss total
@@ -2285,8 +2304,74 @@ class PainelEditais(ctk.CTkFrame):
 
         import threading
         def worker():
+            nonlocal lic_id
             try:
-                from supabase_client import aprovar_licitacao_disputa
+                import uuid
+                from datetime import datetime, timezone
+                from supabase_client import get_client, aprovar_licitacao_disputa
+                sb = get_client()
+
+                # Se não possuir ID prévio no Supabase (ex: edital aberto direto por link PNCP ou Drive),
+                # realiza auto-cadastro (upsert) imediato do certame
+                if not lic_id:
+                    logger.info("⚡ Certame sem ID prévio: executando auto-cadastro (upsert) imediato no Supabase...")
+                    num_pncp = lic.get("numero_controle_pncp") or lic.get("id_pncp")
+                    if not num_pncp:
+                        num_pncp = f"DRIVE_{uuid.uuid4().hex[:12]}"
+
+                    payload_auto = {
+                        "numero_controle_pncp": str(num_pncp),
+                        "numero_pregao": str(lic.get("numero_pregao") or "S/N"),
+                        "numero_uasg": str(lic.get("numero_uasg") or "S/N"),
+                        "objeto": str(lic.get("objeto") or "Objeto do certame"),
+                        "orgao_nome": str(lic.get("orgao_nome") or lic.get("orgao") or "Órgão Não Informado"),
+                        "valor_estimado": val_est,
+                        "status_analise": "aprovado_disputa",
+                        "stop_loss": total_stop_loss,
+                        "uf": str(lic.get("uf") or "TO"),
+                        "portal": str(lic.get("portal") or ("SIGA_TO" if "siga.to" in str(lic.get("link_sistema", "")) else "COMPRAS_GOV")),
+                        "link_sistema": str(lic.get("link_sistema") or lic.get("link_edital") or ""),
+                        "atualizado_em": datetime.now(timezone.utc).isoformat(),
+                    }
+
+                    res_cad = None
+                    try:
+                        res_cad = sb.table("licitacoes").upsert(payload_auto, on_conflict="numero_controle_pncp").execute()
+                    except Exception as e_up:
+                        logger.warning(f"Upsert por numero_controle_pncp falhou ({e_up}), tentando insert...")
+                        res_cad = sb.table("licitacoes").insert(payload_auto).execute()
+
+                    if res_cad and res_cad.data and len(res_cad.data) > 0:
+                        lic_id = str(res_cad.data[0].get("id"))
+                        self.licitacao_id = lic_id
+                        lic["id"] = lic_id
+                        if hasattr(self, "licitacao_ativa") and isinstance(self.licitacao_ativa, dict):
+                            self.licitacao_ativa["id"] = lic_id
+                        if hasattr(self.app, "licitacao_ativa") and isinstance(self.app.licitacao_ativa, dict):
+                            self.app.licitacao_ativa["id"] = lic_id
+                        logger.info(f"✅ Certame auto-cadastrado no Supabase com sucesso! ID: {lic_id}")
+                    else:
+                        raise RuntimeError("Supabase não retornou registro após auto-cadastro do certame.")
+
+                # Grava os itens em itens_licitacao
+                if itens and lic_id:
+                    for idx, it in enumerate(itens, 1):
+                        try:
+                            item_pld = {
+                                "licitacao_id": str(lic_id),
+                                "numero_item": int(it.get("numero_item") or idx),
+                                "descricao": str(it.get("descricao") or f"Item {idx}"),
+                                "quantidade": float(it.get("quantidade") or 1.0),
+                                "unidade_medida": str(it.get("unidade_medida") or "UN"),
+                                "valor_referencia": float(it.get("valor_referencia") or 0.0),
+                                "custo_unitario": float(it.get("custo_real") or it.get("custo_unitario") or 0.0),
+                                "margem_minima_percent": float(it.get("margem") or it.get("margem_minima_percent") or 0.0),
+                                "preco_minimo": float(it.get("piso_preco") or it.get("stop_loss") or it.get("preco_minimo") or 0.0),
+                            }
+                            sb.table("itens_licitacao").upsert(item_pld, on_conflict="licitacao_id,numero_item").execute()
+                        except Exception as e_it:
+                            logger.warning(f"Aviso ao persistir item {idx} no Supabase: {e_it}")
+
                 sucesso = aprovar_licitacao_disputa(
                     licitacao_id=str(lic_id),
                     stop_loss_total=total_stop_loss,
@@ -4342,9 +4427,16 @@ class PainelServicos(ctk.CTkFrame):
 
         # Atualiza a lista dados_servicos para bater com os índices das linhas
         self.dados_servicos = [item[0] for item in itens_filtrados]
-        
         for i, (srv, crono) in enumerate(itens_filtrados):
-            uf_cidade = f"[{srv.get('uf', 'BR')}] {srv.get('municipio', 'Nacional')}"
+            uf = str(srv.get("uf") or "TO").strip()
+            mun = srv.get("municipio")
+            if not mun or str(mun).strip().lower() in ("none", "null", ""):
+                orgao_limpo = str(srv.get("orgao_nome") or "").strip()
+                if uf == "TO":
+                    mun = "Estadual" if not orgao_limpo else (orgao_limpo[:20] if any(k in orgao_limpo.upper() for k in ["ESTADO", "SECRETARIA", "POLICIA", "TRIBUNAL", "GOVERNO", "AGENCIA", "PMTO", "CORPO"]) else "Estadual")
+                else:
+                    mun = orgao_limpo[:20] if orgao_limpo else "Estadual"
+            uf_cidade = f"[{uf}] {mun}"
             distancia = formatar_distancia_palmas(srv.get("municipio"), srv.get("uf"), srv.get("objeto", ""))
             orgao = srv.get("orgao_nome", "")[:30]
             objeto = srv.get("objeto", "")[:50]
@@ -4758,7 +4850,15 @@ class PainelProdutos(ctk.CTkFrame):
             
         for i, prod in enumerate(self.dados_produtos):
             if not isinstance(prod, dict): continue
-            uf_cidade = f"[{prod.get('uf', 'BR')}] {prod.get('municipio', 'Nacional')}"
+            uf = str(prod.get("uf") or "TO").strip()
+            mun = prod.get("municipio")
+            if not mun or str(mun).strip().lower() in ("none", "null", ""):
+                orgao_limpo = str(prod.get("orgao_nome") or "").strip()
+                if uf == "TO":
+                    mun = "Estadual" if not orgao_limpo else (orgao_limpo[:20] if any(k in orgao_limpo.upper() for k in ["ESTADO", "SECRETARIA", "POLICIA", "TRIBUNAL", "GOVERNO", "AGENCIA", "PMTO", "CORPO"]) else "Estadual")
+                else:
+                    mun = orgao_limpo[:20] if orgao_limpo else "Estadual"
+            uf_cidade = f"[{uf}] {mun}"
             orgao = str(prod.get("orgao_nome") or "")[:30]
             objeto = str(prod.get("objeto") or "")[:50]
             valor_raw = prod.get("valor_estimado")

@@ -23,23 +23,58 @@ HEADERS = {
 }
 
 def limpar_termo_busca(descricao_edital: str) -> str:
-    """Extrai apenas as palavras essenciais do produto (ex: marca, modelo, capacidade)."""
-    stopwords = [
-        "aquisicao", "fornecimento", "de", "para", "com", "em", "um", "uma",
-        "tipo", "unidade", "conforme", "termo", "referencia", "especificacoes"
-    ]
-    palavras = re.findall(r'\b[A-Za-z0-9/.-]+\b', descricao_edital.lower())
-    filtradas = [p for p in palavras if p not in stopwords and len(p) > 1]
-    return " ".join(filtradas[:5])
+    """
+    Remove termos burocráticos e administrativos de licitações,
+    isolando apenas o produto/peça/hardware (ex: 'Bateria Nobreak 12V 7Ah', 'Toner HP 105A', 'Switch 24 portas').
+    """
+    if not descricao_edital:
+        return ""
+    texto = descricao_edital.strip()
 
-def consultar_precos_mercadolivre(termo_produto: str, limite: int = 5) -> dict:
+    # 1. Padrões burocráticos a remover (case-insensitive)
+    padroes_remover = [
+        r"registro\s+de\s+pre[çc]os?\s+(?:para\s+)?(?:eventual\s+)?(?:aquisi[çc][ãa]o|contrata[çc][ãa]o|fornecimento)?\s*(?:de)?",
+        r"contrata[çc][ãa]o\s+de\s+empresa\s+(?:especializada\s+)?(?:em|para)?",
+        r"presta[çc][ãa]o\s+de\s+servi[çc]os?\s+(?:de|para|especializados?\s+em)?",
+        r"(?:eventual\s+)?aquisi[çc][ãa]o\s+de",
+        r"(?:eventual\s+)?fornecimento\s+de",
+        r"loca[çc][ãa]o\s+de",
+        r"servi[çc]os?\s+de\s+(?:manuten[çc][ãa]o|reparo|suporte|instala[çc][ãa]o|sustenta[çc][ãa]o)\s*(?:de|em|para)?",
+        r"conforme\s+(?:o\s+)?termo\s+de\s+refer[êe]ncia.*$",
+        r"para\s+atender\s+(?:[àa]s?\s+)?necessidades?.*$",
+        r"atender\s+(?:as?\s+demandas?|o\s+munic[íi]pio).*$",
+        r"destinados?\s+(?:[àa]|ao|aos|para).*$",
+    ]
+    for padrao in padroes_remover:
+        texto = re.sub(padrao, " ", texto, flags=re.IGNORECASE)
+
+    # 2. Stopwords adicionais de edital
+    stopwords = {
+        "aquisicao", "fornecimento", "de", "da", "do", "das", "dos", "para", "com", "em", "um", "uma",
+        "tipo", "unidade", "conforme", "termo", "referencia", "especificacoes", "objeto", "licitacao",
+        "pregao", "dispensa", "eletronica", "empresa", "especializada", "prestacao", "servico", "servicos",
+        "registro", "precos", "preco", "marca", "modelo", "similar", "ou", "melhor", "qualidade",
+        "primeira", "linha", "original", "item", "lote", "atender", "necessidades", "secretaria",
+        "prefeitura", "fundo", "municipal", "estadual"
+    }
+
+    # Preserva palavras chaves e identificadores como '12V', '7Ah', '105A', 'Cat6', 'RJ45', 'DDR4', 'SSD', 'NVMe', '24'
+    palavras = re.findall(r'[A-Za-z0-9/.-]+', texto)
+    filtradas = [p for p in palavras if p.lower() not in stopwords and len(p) > 1]
+
+    # Isola o núcleo do produto (até 6 palavras mais relevantes)
+    if filtradas:
+        return " ".join(filtradas[:6])
+    return texto[:50].strip()
+
+def consultar_precos_mercadolivre(termo_produto: str, limite: int = 5, ja_limpo: bool = False) -> dict:
     """
     Busca o produto no Mercado Livre e retorna:
     - Menor Preço encontrado
     - Preço Médio
     - Título e Link da melhor oferta
     """
-    termo_limpo = limpar_termo_busca(termo_produto)
+    termo_limpo = termo_produto.strip() if ja_limpo else limpar_termo_busca(termo_produto)
     logger.info(f"Cotando no Mercado Livre (Scraping): '{termo_limpo}'...")
     
     termo_encoded = urllib.parse.quote(termo_limpo)
@@ -104,11 +139,11 @@ def consultar_precos_mercadolivre(termo_produto: str, limite: int = 5) -> dict:
         logger.error(f"Erro na consulta Mercado Livre: {e}")
         return {"sucesso": False, "motivo": str(e)}
 
-def analisar_viabilidade_ml(descricao_item: str, valor_referencia_governo: float) -> dict:
+def analisar_viabilidade_ml(descricao_item: str, valor_referencia_governo: float, ja_limpo: bool = False) -> dict:
     """
     Compara o valor do edital com o custo real no Mercado Livre aplicando a margem de 30%.
     """
-    cotacao = consultar_precos_mercadolivre(descricao_item)
+    cotacao = consultar_precos_mercadolivre(descricao_item, ja_limpo=ja_limpo)
     if not cotacao.get("sucesso"):
         return cotacao
 

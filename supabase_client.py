@@ -274,11 +274,12 @@ def inserir_licitacao(dados: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Registro inserido/atualizado como dicionário.
     """
+    conflict_col = "numero_controle_pncp" if dados.get("numero_controle_pncp") else "numero_uasg,numero_pregao"
     try:
         resposta = (
             get_client()
             .table("licitacoes")
-            .upsert(dados, on_conflict="numero_uasg,numero_pregao")
+            .upsert(dados, on_conflict=conflict_col)
             .execute()
         )
         return resposta.data[0] if resposta.data else {}
@@ -290,7 +291,7 @@ def inserir_licitacao(dados: dict[str, Any]) -> dict[str, Any]:
             resposta = (
                 get_client()
                 .table("licitacoes")
-                .upsert(dados_fallback, on_conflict="numero_uasg,numero_pregao")
+                .upsert(dados_fallback, on_conflict=conflict_col)
                 .execute()
             )
             return resposta.data[0] if resposta.data else {}
